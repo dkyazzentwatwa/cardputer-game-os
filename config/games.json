@@ -1,0 +1,154 @@
+{
+  "games": [
+    {
+      "name": "Star Trader",
+      "slug": "star-trader-pocket-frontier",
+      "binary": "star-trader-pocket-frontier.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/star_trader_pocket_frontier",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep ship-console trading sim with markets, routes, cargo, crew, upgrades, and route events.",
+      "save_path": "/cardputer-game-os/saves/star-trader-pocket-frontier/save.sav"
+    },
+    {
+      "name": "Dungeon Courier",
+      "slug": "dungeon-courier",
+      "binary": "dungeon-courier.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/dungeon_courier",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep contract delivery RPG with town boards, package integrity, supplies, route choices, and perks.",
+      "save_path": "/cardputer-game-os/saves/dungeon-courier/save.sav"
+    },
+    {
+      "name": "Tiny Wasteland",
+      "slug": "tiny-wasteland",
+      "binary": "tiny-wasteland.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/tiny_wasteland",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep survival road drama with regions, camp care, scavenging risk, party state, trade, and vehicle pressure.",
+      "save_path": "/cardputer-game-os/saves/tiny-wasteland/save.sav"
+    },
+    {
+      "name": "Pocket Kingdom",
+      "slug": "pocket-kingdom-manager",
+      "binary": "pocket-kingdom-manager.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/pocket_kingdom_manager",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep seasonal kingdom ledger with workers, buildings, laws, advisors, crises, and yearly reports.",
+      "save_path": "/cardputer-game-os/saves/pocket-kingdom-manager/save.sav"
+    },
+    {
+      "name": "Monster Ranch",
+      "slug": "monster-ranch-trail",
+      "binary": "monster-ranch-trail.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/monster_ranch_trail",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep weekly ranch sim with creature care, training, expeditions, facilities, tournaments, and ranch events.",
+      "save_path": "/cardputer-game-os/saves/monster-ranch-trail/save.sav"
+    },
+    {
+      "name": "Guildmaster",
+      "slug": "guildmaster-pocket",
+      "binary": "guildmaster-pocket.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/guildmaster_pocket",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep quest desk sim with generated contracts, class parties, staged results, hall upgrades, and rivals.",
+      "save_path": "/cardputer-game-os/saves/guildmaster-pocket/save.sav"
+    },
+    {
+      "name": "Haunted Radio",
+      "slug": "haunted-radio-operator",
+      "binary": "haunted-radio-operator.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/haunted_radio_operator",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep fictional station mystery with tuning, fake signals, decode tools, cases, logs, and power routing.",
+      "save_path": "/cardputer-game-os/saves/haunted-radio-operator/save.sav"
+    },
+    {
+      "name": "Cyberdeck RPG",
+      "slug": "cyberdeck-hacker-rpg",
+      "binary": "cyberdeck-hacker-rpg.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/cyberdeck_hacker_rpg",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep offline fake node-crawl with job board, simulated nodes, tools, recovered files, market, and reps.",
+      "save_path": "/cardputer-game-os/saves/cyberdeck-hacker-rpg/save.sav"
+    },
+    {
+      "name": "Pocket Detective",
+      "slug": "pocket-detective-agency",
+      "binary": "pocket-detective-agency.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/pocket_detective_agency",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep notebook mystery game with cases, maps, interviews, clue book, clue comparison, and accusations.",
+      "save_path": "/cardputer-game-os/saves/pocket-detective-agency/save.sav"
+    },
+    {
+      "name": "Cryptid Ranger",
+      "slug": "cryptid-park-ranger",
+      "binary": "cryptid-park-ranger.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/cryptid_park_ranger",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep ethical field research game with zones, gear, patrols, evidence tracking, guide entries, and reports.",
+      "save_path": "/cardputer-game-os/saves/cryptid-park-ranger/save.sav"
+    },
+    {
+      "name": "Cyber Ranger",
+      "slug": "cyber-ranger",
+      "binary": "cyber-ranger.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/cyber_ranger",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep fictional cyber-wilderness investigation with park zones, fake anomaly boards, deck commands, guide, cases, and gear.",
+      "save_path": "/cardputer-game-os/saves/cyber-ranger/save.sav"
+    },
+    {
+      "name": "Star Trail Ranch",
+      "slug": "star-trail-rancher",
+      "binary": "star-trail-rancher.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/star_trail_rancher",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep space creature transport sim with contracts, habitats, route decay, market supplies, and discovery logs.",
+      "save_path": "/cardputer-game-os/saves/star-trail-rancher/save.sav"
+    },
+    {
+      "name": "Waste Guild",
+      "slug": "wasteland-guildmaster",
+      "binary": "wasteland-guildmaster.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/wasteland_guildmaster",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep settlement command sim with base pressure, expeditions, team roles, staged results, facilities, and threats.",
+      "save_path": "/cardputer-game-os/saves/wasteland-guildmaster/save.sav"
+    },
+    {
+      "name": "Signal Rat",
+      "slug": "signal-rat-cyberdeck-rpg",
+      "binary": "signal-rat-cyberdeck-rpg.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/cardputer-game-os/games/signal_rat_cyberdeck_rpg",
+      "version": "deep-v2",
+      "status": "ready",
+      "notes": "Deep flagship fictional cyberdeck RPG with safehouse, faction jobs, simulated nodes, recovered files, and deck upgrades.",
+      "save_path": "/cardputer-game-os/saves/signal-rat-cyberdeck-rpg/save.sav"
+    },
+    {
+      "name": "Poke-Trail",
+      "slug": "poke-trail",
+      "binary": "poke-trail.bin",
+      "source_path": "/Users/cypher/Documents/GitHub/poke-trail/PokeTrail",
+      "version": "local-v1",
+      "status": "ready",
+      "notes": "Original creature trail RPG with travel, battles, catching, audio, and region progression.",
+      "save_path": "/poke-trail/save.sav"
+    }
+  ]
+}

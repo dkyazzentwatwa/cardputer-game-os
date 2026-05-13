@@ -1,0 +1,16 @@
+# Arduino build output
+build/
+dist/
+*.bin
+*.elf
+*.map
+*.hex
+*.partitions.bin
+*.bootloader.bin
+*.merged.bin
+
+# macOS/editor noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
