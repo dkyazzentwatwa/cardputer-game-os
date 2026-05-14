@@ -376,13 +376,18 @@ bool readTextSave(const char* path, const char* fallbackBakPath, String& out) {
   return out.length() > 0;
 }
 
-void returnToLauncher(uint32_t delayMs) {
+static void markLauncherReturnPrefs(const char* prefsNamespace) {
   Preferences prefs;
-  if (prefs.begin("cardgameos", false)) {
+  if (prefs.begin(prefsNamespace, false)) {
     prefs.putBool("returnOnce", true);
     prefs.putBool("bootToApp", false);
     prefs.end();
   }
+}
+
+void returnToLauncher(uint32_t delayMs) {
+  markLauncherReturnPrefs("cardgameos");
+  markLauncherReturnPrefs("cyputeros");
   const esp_partition_t* launcher = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, "app0");
   if (!launcher) {
     launcher = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
@@ -1120,6 +1125,7 @@ void DeepGameRuntime::drawTitle() {
 void DeepGameRuntime::drawHub() {
   drawHeader(def.title, def.accentColor);
   auto& d = ui();
+  static constexpr uint8_t hubRowsPerPage = 3;
   d.setTextColor(COLOR_TEXT, gTheme.bg);
   d.setCursor(8, 29);
   d.printf("Day %-3u Prog %u/%u", state.day, state.progress, def.targetProgress);
@@ -1135,17 +1141,21 @@ void DeepGameRuntime::drawHub() {
       y += 12;
     }
   }
-  uint8_t start = page * 4;
-  uint8_t count = start >= def.screenCount ? 0 : min<uint8_t>(4, def.screenCount - start);
+  uint8_t maxPage = def.screenCount == 0 ? 0 : (def.screenCount - 1) / hubRowsPerPage;
+  if (page > maxPage) page = maxPage;
+  uint8_t start = page * hubRowsPerPage;
+  uint8_t count = start >= def.screenCount ? 0 : min<uint8_t>(hubRowsPerPage, def.screenCount - start);
+  if (count == 0) selected = 0;
+  else if (selected >= count) selected = count - 1;
   for (uint8_t i = 0; i < count; ++i) {
     const DeepScreenDef& screen = def.screens[start + i];
     char label[28];
     snprintf(label, sizeof(label), "%u %s", i + 1, screen.title);
-    drawRow(i + 3, label, screen.verb, selected == i);
+    drawRow(i + 2, label, screen.verb, selected == i);
   }
   d.setTextColor(COLOR_DIM, gTheme.bg);
   d.setCursor(8, 116);
-  d.printf("Pg %u/%u  5 Status  Q title", page + 1, max<uint8_t>((def.screenCount + 3) / 4, 1));
+  d.printf("Pg %u/%u  5 Status  Q title", page + 1, max<uint8_t>((def.screenCount + hubRowsPerPage - 1) / hubRowsPerPage, 1));
   drawFooter("Pick a deep system");
 }
 
@@ -1292,9 +1302,13 @@ void DeepGameRuntime::handleTitle(const InputEvent& input) {
 }
 
 void DeepGameRuntime::handleHub(const InputEvent& input) {
-  uint8_t maxPage = def.screenCount == 0 ? 0 : (def.screenCount - 1) / 4;
-  uint8_t start = page * 4;
-  uint8_t count = start >= def.screenCount ? 0 : min<uint8_t>(4, def.screenCount - start);
+  static constexpr uint8_t hubRowsPerPage = 3;
+  uint8_t maxPage = def.screenCount == 0 ? 0 : (def.screenCount - 1) / hubRowsPerPage;
+  if (page > maxPage) page = maxPage;
+  uint8_t start = page * hubRowsPerPage;
+  uint8_t count = start >= def.screenCount ? 0 : min<uint8_t>(hubRowsPerPage, def.screenCount - start);
+  if (count == 0) selected = 0;
+  else if (selected >= count) selected = count - 1;
   if (input.back) {
     view = DEEP_TITLE;
     hasSave = saveExists();
@@ -1315,9 +1329,9 @@ void DeepGameRuntime::handleHub(const InputEvent& input) {
   } else if (input.right && page < maxPage) {
     page++;
     selected = 0;
-  } else if (input.up) {
+  } else if (input.up && count > 0) {
     selected = selected == 0 ? count - 1 : selected - 1;
-  } else if (input.down) {
+  } else if (input.down && count > 0) {
     selected = (selected + 1) % count;
   } else if (input.select && count > 0) {
     activeScreen = start + selected;
@@ -1334,8 +1348,9 @@ void DeepGameRuntime::handleDetail(const InputEvent& input) {
   uint8_t visible = min<uint8_t>(5, screen.rowCount - page * 5);
   if (input.back) {
     view = DEEP_HUB;
-    page = activeScreen / 4;
-    selected = activeScreen % 4;
+    static constexpr uint8_t hubRowsPerPage = 3;
+    page = activeScreen / hubRowsPerPage;
+    selected = activeScreen % hubRowsPerPage;
     dirty = true;
     return;
   }
