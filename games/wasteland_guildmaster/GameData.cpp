@@ -1,239 +1,417 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Food", 65, 0, 999, -4, 7},
-    {"Water", 60, 0, 999, -5, 7},
-    {"Meds", 5, 0, 99, -1, 1},
-    {"Ammo", 18, 0, 99, -2, 1},
-    {"Scrap", 25, 0, 999, 4, -1},
-    {"Power", 35, 0, 120, -3, 3},
-    {"Mor", 70, 0, 100, -2, 5},
-    {"Def", 20, 0, 100, 1, 1},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep in sync with RESOURCES order).
+enum {
+  R_FOOD, R_WATER, R_MEDS, R_AMMO,
+  R_SCRAP, R_POWER, R_MORALE, R_DEFENSE
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_0[] = {
-    {"Food 01", "Command food #1: checks settlement pressure"},
-    {"Water 02", "Command water #2: checks settlement pressure"},
-    {"Clinic 03", "Command clinic #3: checks settlement pressure"},
-    {"Tower 04", "Command tower #4: checks settlement pressure"},
-    {"Farm 05", "Command farm #5: checks settlement pressure"},
-    {"Depot 06", "Command depot #6: checks settlement pressure"},
-    {"Food 07", "Command food #7: checks settlement pressure"},
-    {"Water 08", "Command water #8: checks settlement pressure"},
-    {"Clinic 09", "Command clinic #9: checks settlement pressure"},
-    {"Tower 10", "Command tower #10: checks settlement pressure"},
-    {"Farm 11", "Command farm #11: checks settlement pressure"},
-    {"Depot 12", "Command depot #12: checks settlement pressure"},
+// Story flags. Screens set these; events/endings gate on them.
+enum : uint32_t {
+  F_TEAM_FORMED   = 1u << 0,  // a scavenger team has been assigned
+  F_CLINIC_BUILT  = 1u << 1,  // infirmary upgraded, can treat radiation
+  F_RADIO_BUILT   = 1u << 2,  // radio tower constructed, regions unlocked
+  F_WALLS_BUILT   = 1u << 3,  // walls up, defense threshold raised
+  F_FACTION_ALLY  = 1u << 4,  // allied with one faction (river medics)
+  F_SIGNAL_FOUND  = 1u << 5,  // radio signal contact made
+  F_PLAN_CONVOY   = 1u << 6,  // chose mobile convoy as endgame plan
+  F_PLAN_BEACON   = 1u << 7,  // chose signal beacon as endgame plan
+  F_PLAN_BUNKER   = 1u << 8,  // chose bunker isolation as endgame plan
+  F_ENDGAME       = 1u << 9,  // survival plan activated (gated endgame)
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_1[] = {
-    {"Clinic 01", "Launch clinic #1: sends a team for loot"},
-    {"Tower 02", "Launch tower #2: sends a team for loot"},
-    {"Depot 03", "Launch depot #3: sends a team for loot"},
-    {"Tunnel 04", "Launch tunnel #4: sends a team for loot"},
-    {"Farm 05", "Launch farm #5: sends a team for loot"},
-    {"Storm 06", "Launch storm #6: sends a team for loot"},
-    {"River 07", "Launch river #7: sends a team for loot"},
-    {"Authority 08", "Launch authority #8: sends a team for loot"},
-    {"Clinic 09", "Launch clinic #9: sends a team for loot"},
-    {"Tower 10", "Launch tower #10: sends a team for loot"},
-    {"Depot 11", "Launch depot #11: sends a team for loot"},
-    {"Tunnel 12", "Launch tunnel #12: sends a team for loot"},
-    {"Farm 13", "Launch farm #13: sends a team for loot"},
-    {"Storm 14", "Launch storm #14: sends a team for loot"},
-    {"River 15", "Launch river #15: sends a team for loot"},
-    {"Authority 16", "Launch authority #16: sends a team for loot"},
-    {"Clinic 17", "Launch clinic #17: sends a team for loot"},
-    {"Tower 18", "Launch tower #18: sends a team for loot"},
-    {"Depot 19", "Launch depot #19: sends a team for loot"},
-    {"Tunnel 20", "Launch tunnel #20: sends a team for loot"},
-    {"Farm 21", "Launch farm #21: sends a team for loot"},
-    {"Storm 22", "Launch storm #22: sends a team for loot"},
-    {"River 23", "Launch river #23: sends a team for loot"},
-    {"Authority 24", "Launch authority #24: sends a team for loot"},
+// ---------------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------------
+static const CGC::ResourceDef RESOURCES[] = {
+  // label   start  min  max  prim  safe  warn  bad   inverted
+  {"Food",    55,   0,  999,  -3,    5,    18,   8,  false},  // loss trigger
+  {"Water",   50,   0,  999,   0,    4,    15,   6,  false},
+  {"Meds",    12,   0,   99,   0,    0,     6,   2,  false},
+  {"Ammo",    22,   0,   99,   0,    0,     8,   3,  false},
+  {"Scrap",   30,   0,  999,   0,    0,    -1,  -1,  false},  // currency
+  {"Power",   20,   0,  120,   0,    0,     6,   2,  false},
+  {"Morale",  60,   0,  100,   0,    0,    25,  12,  false},
+  {"Defense", 15,   0,  100,   0,    0,     8,   3,  false},
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_2[] = {
-    {"Scout 01", "Assign scout #1: changes stage odds"},
-    {"Medic 02", "Assign medic #2: changes stage odds"},
-    {"Guard 03", "Assign guard #3: changes stage odds"},
-    {"Tech 04", "Assign tech #4: changes stage odds"},
-    {"Cook 05", "Assign cook #5: changes stage odds"},
-    {"Baron 06", "Assign baron #6: changes stage odds"},
-    {"Cultist 07", "Assign cultist #7: changes stage odds"},
-    {"Radio 08", "Assign radio #8: changes stage odds"},
+// ---------------------------------------------------------------------------
+// SETTLEMENT screen — weekly review, ration planning, morale calls
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_SETTLEMENT[] = {
+  {"Ration Review",    "Audit stores; balance food vs headcount."},
+  {"Water Check",      "Inspect filters and reserve tanks."},
+  {"Count Heads",      "Log survivors present; note absences."},
+  {"Council Meeting",  "Hear concerns; set week priorities."},
+  {"Post Work Orders", "Assign repair crews to camp damage."},
+  {"Trade Ledger",     "Review last faction exchange terms."},
+  {"Read the Clock",   "Check threat meters; note due dates."},
+  {"Night Watch Log",  "Review patrol reports for anomalies."},
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_3[] = {
-    {"Ruin 01", "Resolve ruin #1: applies role checks and moral pressure"},
-    {"Clinic 02", "Resolve clinic #2: applies role checks and moral pressure"},
-    {"Depot 03", "Resolve depot #3: applies role checks and moral pressure"},
-    {"Tower 04", "Resolve tower #4: applies role checks and moral pressure"},
-    {"Farm 05", "Resolve farm #5: applies role checks and moral pressure"},
-    {"Tunnel 06", "Resolve tunnel #6: applies role checks and moral pressure"},
-    {"Camp 07", "Resolve camp #7: applies role checks and moral pressure"},
-    {"Signal 08", "Resolve signal #8: applies role checks and moral pressure"},
-    {"Ruin 09", "Resolve ruin #9: applies role checks and moral pressure"},
-    {"Clinic 10", "Resolve clinic #10: applies role checks and moral pressure"},
-    {"Depot 11", "Resolve depot #11: applies role checks and moral pressure"},
-    {"Tower 12", "Resolve tower #12: applies role checks and moral pressure"},
-    {"Farm 13", "Resolve farm #13: applies role checks and moral pressure"},
-    {"Tunnel 14", "Resolve tunnel #14: applies role checks and moral pressure"},
-    {"Camp 15", "Resolve camp #15: applies role checks and moral pressure"},
-    {"Signal 16", "Resolve signal #16: applies role checks and moral pressure"},
-    {"Ruin 17", "Resolve ruin #17: applies role checks and moral pressure"},
-    {"Clinic 18", "Resolve clinic #18: applies role checks and moral pressure"},
-    {"Depot 19", "Resolve depot #19: applies role checks and moral pressure"},
-    {"Tower 20", "Resolve tower #20: applies role checks and moral pressure"},
-    {"Farm 21", "Resolve farm #21: applies role checks and moral pressure"},
-    {"Tunnel 22", "Resolve tunnel #22: applies role checks and moral pressure"},
-    {"Camp 23", "Resolve camp #23: applies role checks and moral pressure"},
-    {"Signal 24", "Resolve signal #24: applies role checks and moral pressure"},
-    {"Ruin 25", "Resolve ruin #25: applies role checks and moral pressure"},
-    {"Clinic 26", "Resolve clinic #26: applies role checks and moral pressure"},
-    {"Depot 27", "Resolve depot #27: applies role checks and moral pressure"},
-    {"Tower 28", "Resolve tower #28: applies role checks and moral pressure"},
-    {"Farm 29", "Resolve farm #29: applies role checks and moral pressure"},
-    {"Tunnel 30", "Resolve tunnel #30: applies role checks and moral pressure"},
-    {"Camp 31", "Resolve camp #31: applies role checks and moral pressure"},
-    {"Signal 32", "Resolve signal #32: applies role checks and moral pressure"},
-    {"Ruin 33", "Resolve ruin #33: applies role checks and moral pressure"},
-    {"Clinic 34", "Resolve clinic #34: applies role checks and moral pressure"},
-    {"Depot 35", "Resolve depot #35: applies role checks and moral pressure"},
-    {"Tower 36", "Resolve tower #36: applies role checks and moral pressure"},
+// ---------------------------------------------------------------------------
+// ROSTER screen — recruit and assign survivors by role
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_ROSTER[] = {
+  {"Sign Scout",      "Recruit a scout; costs food to onboard."},
+  {"Sign Medic",      "Recruit a medic; needs meds supply."},
+  {"Sign Guard",      "Recruit a guard; bolsters defense."},
+  {"Sign Tech",       "Recruit a tech; helps build and power."},
+  {"Assign Roles",    "Shuffle survivor role assignments."},
+  {"Brief the Team",  "Walk team through the next run plan."},
+  {"Rest Cycle",      "Rotate tired survivors; ease stress."},
+  {"Motivate Squad",  "Speech and rations boost team morale."},
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_4[] = {
-    {"Garden 01", "Build garden #1: spends scrap and power"},
-    {"Purifier 02", "Build purifier #2: spends scrap and power"},
-    {"Clinic 03", "Build clinic #3: spends scrap and power"},
-    {"Workshop 04", "Build workshop #4: spends scrap and power"},
-    {"Barracks 05", "Build barracks #5: spends scrap and power"},
-    {"Watchtower 06", "Build watchtower #6: spends scrap and power"},
-    {"Radio 07", "Build radio #7: spends scrap and power"},
-    {"School 08", "Build school #8: spends scrap and power"},
-    {"Walls 09", "Build walls #9: spends scrap and power"},
-    {"Storage 10", "Build storage #10: spends scrap and power"},
-    {"Garden 11", "Build garden #11: spends scrap and power"},
-    {"Purifier 12", "Build purifier #12: spends scrap and power"},
-    {"Clinic 13", "Build clinic #13: spends scrap and power"},
-    {"Workshop 14", "Build workshop #14: spends scrap and power"},
-    {"Barracks 15", "Build barracks #15: spends scrap and power"},
-    {"Watchtower 16", "Build watchtower #16: spends scrap and power"},
-    {"Radio 17", "Build radio #17: spends scrap and power"},
-    {"School 18", "Build school #18: spends scrap and power"},
-    {"Walls 19", "Build walls #19: spends scrap and power"},
-    {"Storage 20", "Build storage #20: spends scrap and power"},
-    {"Garden 21", "Build garden #21: spends scrap and power"},
-    {"Purifier 22", "Build purifier #22: spends scrap and power"},
-    {"Clinic 23", "Build clinic #23: spends scrap and power"},
-    {"Workshop 24", "Build workshop #24: spends scrap and power"},
-    {"Barracks 25", "Build barracks #25: spends scrap and power"},
-    {"Watchtower 26", "Build watchtower #26: spends scrap and power"},
-    {"Radio 27", "Build radio #27: spends scrap and power"},
-    {"School 28", "Build school #28: spends scrap and power"},
-    {"Walls 29", "Build walls #29: spends scrap and power"},
-    {"Storage 30", "Build storage #30: spends scrap and power"},
+// ---------------------------------------------------------------------------
+// EXPEDITION screen — send team into ruins; costs Ammo, gated on F_TEAM_FORMED
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_EXPEDITION[] = {
+  {"Clinic Ruins",    "Strip old clinic for meds and gear."},
+  {"Depot Sweep",     "Hit the warehouse district for scrap."},
+  {"Radio Tower",     "Climb to restore a signal relay."},
+  {"Tunnel Network",  "Probe the underground passage routes."},
+  {"Farm Salvage",    "Recover seeds and irrigation parts."},
+  {"Faction Camp",    "Make contact with the river medics."},
+  {"Rescue Signal",   "Follow a distress beacon into danger."},
+  {"Authority Cache", "Breach a pre-collapse storage vault."},
 };
 
-static const CardputerGameCore::NamedValue WASTELAND_GUILDMASTER_ROWS_5[] = {
-    {"Raiders 01", "Answer raiders #1: resolves settlement clocks"},
-    {"Sickness 02", "Answer sickness #2: resolves settlement clocks"},
-    {"Storm 03", "Answer storm #3: resolves settlement clocks"},
-    {"Hunger 04", "Answer hunger #4: resolves settlement clocks"},
-    {"Demand 05", "Answer demand #5: resolves settlement clocks"},
-    {"Raiders 06", "Answer raiders #6: resolves settlement clocks"},
-    {"Sickness 07", "Answer sickness #7: resolves settlement clocks"},
-    {"Storm 08", "Answer storm #8: resolves settlement clocks"},
-    {"Hunger 09", "Answer hunger #9: resolves settlement clocks"},
-    {"Demand 10", "Answer demand #10: resolves settlement clocks"},
-    {"Raiders 11", "Answer raiders #11: resolves settlement clocks"},
-    {"Sickness 12", "Answer sickness #12: resolves settlement clocks"},
-    {"Storm 13", "Answer storm #13: resolves settlement clocks"},
-    {"Hunger 14", "Answer hunger #14: resolves settlement clocks"},
-    {"Demand 15", "Answer demand #15: resolves settlement clocks"},
-    {"Raiders 16", "Answer raiders #16: resolves settlement clocks"},
-    {"Sickness 17", "Answer sickness #17: resolves settlement clocks"},
-    {"Storm 18", "Answer storm #18: resolves settlement clocks"},
-    {"Hunger 19", "Answer hunger #19: resolves settlement clocks"},
-    {"Demand 20", "Answer demand #20: resolves settlement clocks"},
+// ---------------------------------------------------------------------------
+// INFIRMARY screen — treat wounds and radiation; costs Meds
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_INFIRMARY[] = {
+  {"Dress Wounds",     "Bandage lacerations from last run."},
+  {"Treat Infection",  "IV antibiotics for a feverish scout."},
+  {"Flush Radiation",  "Chelation course for rad-exposed crew."},
+  {"Rest Protocol",    "Enforce full rest for critical cases."},
+  {"Triage Report",    "Assess roster injuries; set priority."},
+  {"Brew Antiseptic",  "Stretch meds supply with field brew."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"BASE", "Command", WASTELAND_GUILDMASTER_ROWS_0, 12, {-3, -3, -1, -1, 2, -1, 2, 1}, 3, 0, 1UL},
-    {"MISSIONS", "Launch", WASTELAND_GUILDMASTER_ROWS_1, 24, {3, 2, 2, -2, 5, -2, -1, 1}, 5, 1, 2UL},
-    {"TEAM", "Assign", WASTELAND_GUILDMASTER_ROWS_2, 8, {-1, -1, 1, 1, -1, 1, 2, 1}, 3, 2, 4UL},
-    {"RESULT", "Resolve", WASTELAND_GUILDMASTER_ROWS_3, 36, {4, 2, 1, -2, 3, -1, -2, 1}, 5, 3, 8UL},
-    {"BUILD", "Build", WASTELAND_GUILDMASTER_ROWS_4, 30, {3, 3, 1, 1, -8, -4, 2, 4}, 5, 4, 16UL},
-    {"THREATS", "Answer", WASTELAND_GUILDMASTER_ROWS_5, 20, {-4, -4, -2, -2, 2, -2, -4, 2}, 4, 5, 32UL},
+// ---------------------------------------------------------------------------
+// FACILITIES screen — build and upgrade; costs Scrap + Power
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_FACILITIES[] = {
+  {"Garden Bed",     "Grow calories; reduce food pressure."},
+  {"Water Purifier", "Filter water; boost safe daily yield."},
+  {"Clinic Bay",     "Upgrade infirmary; enables rad flush."},
+  {"Workshop",       "Fabricate parts; stretch scrap supply."},
+  {"Barracks",       "Bunk expansion; boosts morale floor."},
+  {"Watchtower",     "Spotters improve threat early warning."},
+  {"Radio Mast",     "Long-range contact; unlocks regions."},
+  {"Walls Upgrade",  "Reinforce perimeter; raises defense."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Breakthrough 31", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Setback 32", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Pressure 33", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Choice 34", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Discovery 35", "A bespoke Waste Guild event changes saved state and story flags."},
-    {"Trouble 36", "A bespoke Waste Guild event changes saved state and story flags."},
+// ---------------------------------------------------------------------------
+// DEFENSE screen — answer threat clocks; costs Ammo
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_DEFENSE[] = {
+  {"Repel Raiders",   "Drive off scouts probing the walls."},
+  {"Sickness Drill",  "Isolate sick; slow outbreak spread."},
+  {"Storm Prep",      "Board windows; secure loose stores."},
+  {"Hunger Measure",  "Emergency ration cut to stretch food."},
+  {"Faction Demand",  "Negotiate or pay the baron toll."},
+  {"Perimeter Check", "Walk the wall; patch weak points."},
+  {"Ammo Recount",    "Inventory and redistribute ammo."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Fortress Town", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Mobile Convoy", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"River Alliance", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Signal Beacon", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Bunker Rule", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Camp Collapse", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ---------------------------------------------------------------------------
+// ENDGAME screen — choose survival plan; gated on F_RADIO_BUILT + F_SIGNAL_FOUND
+// ---------------------------------------------------------------------------
+static const CGC::NamedValue ROWS_ENDGAME[] = {
+  {"Fortify the Town", "Commit to walls, militia, and roots."},
+  {"Launch Convoy",    "Pack the best and go mobile."},
+  {"River Alliance",   "Merge with the river medic faction."},
+  {"Beacon Broadcast", "Transmit coordinates to all bands."},
+  {"Seal the Bunker",  "Lock down; go dark and survive alone."},
+  {"Hold the Line",    "Keep the plan open; wait for more."},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Waste Guild",
-    "wasteland-guildmaster",
-    "Settlement command sim",
-    "WGM2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    175,
-    0xFD20,
-    0xFD20
+// ---------------------------------------------------------------------------
+// Screens
+// ---------------------------------------------------------------------------
+static const CGC::DeepScreenDef SCREENS[] = {
+  // SETTLEMENT — free; advances Days tracker; sets no flags; always open
+  {.title = "SETTLEMENT", .verb = "Review", .rows = ROWS_SETTLEMENT, .rowCount = 8,
+   .resourceDeltas = {2, 1, 0, 0, 0, 0, 2, 0}, .progressDelta = 2,
+   .trackerIndex = 0, .flagMask = 0,
+   .costResource = -1, .costAmount = 0, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Keep food/water stable; note threats"},
+
+  // ROSTER — costs Food (feed recruits); advances Survivors tracker; sets F_TEAM_FORMED
+  {.title = "ROSTER", .verb = "Recruit", .rows = ROWS_ROSTER, .rowCount = 8,
+   .resourceDeltas = {-3, 0, 0, 0, 0, 0, 3, 1}, .progressDelta = 3,
+   .trackerIndex = 2, .flagMask = F_TEAM_FORMED,
+   .costResource = R_FOOD, .costAmount = 6, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Recruit survivors; build a team (-6 Food)"},
+
+  // EXPEDITION — costs Ammo; advances Expeditions tracker; gated on team
+  {.title = "EXPEDITION", .verb = "Send", .rows = ROWS_EXPEDITION, .rowCount = 8,
+   .resourceDeltas = {3, 2, 2, -4, 4, 1, -2, 0}, .progressDelta = 6,
+   .trackerIndex = 1, .flagMask = 0,
+   .costResource = R_AMMO, .costAmount = 5, .requireFlags = F_TEAM_FORMED,
+   .trackerDelta = 1, .objective = "Send team to loot ruins (needs Team, -5 Ammo)"},
+
+  // INFIRMARY — costs Meds; advances Survivors tracker; gated on clinic built
+  {.title = "INFIRMARY", .verb = "Treat", .rows = ROWS_INFIRMARY, .rowCount = 6,
+   .resourceDeltas = {0, 0, -4, 0, 0, 0, 2, 0}, .progressDelta = 2,
+   .trackerIndex = 2, .flagMask = F_CLINIC_BUILT,
+   .costResource = R_MEDS, .costAmount = 4, .requireFlags = 0,
+   .trackerDelta = 0, .objective = "Treat wounds and radiation (-4 Meds)"},
+
+  // FACILITIES — costs Scrap; advances Facilities tracker; sets F_RADIO_BUILT or F_WALLS_BUILT via events
+  {.title = "FACILITIES", .verb = "Build", .rows = ROWS_FACILITIES, .rowCount = 8,
+   .resourceDeltas = {0, 0, 0, 0, -8, -3, 1, 2}, .progressDelta = 4,
+   .trackerIndex = 3, .flagMask = 0,
+   .costResource = R_SCRAP, .costAmount = 10, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Build or upgrade facilities (-10 Scrap)"},
+
+  // DEFENSE — costs Ammo; advances Threats tracker
+  {.title = "DEFENSE", .verb = "Counter", .rows = ROWS_DEFENSE, .rowCount = 7,
+   .resourceDeltas = {0, 0, 0, -3, 0, 0, 2, 3}, .progressDelta = 3,
+   .trackerIndex = 4, .flagMask = 0,
+   .costResource = R_AMMO, .costAmount = 4, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Answer threats; hold the perimeter (-4 Ammo)"},
+
+  // ENDGAME — free; gated on radio + signal; advances Rescues tracker
+  {.title = "SURVIVAL PLAN", .verb = "Commit", .rows = ROWS_ENDGAME, .rowCount = 6,
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, 4, 4}, .progressDelta = 8,
+   .trackerIndex = 5, .flagMask = F_ENDGAME,
+   .costResource = -1, .costAmount = 0, .requireFlags = F_RADIO_BUILT | F_SIGNAL_FOUND,
+   .trackerDelta = 1, .objective = "Choose settlement fate (needs Radio + Signal)"},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+static const CGC::EventDef EVENTS[] = {
+
+  // --- Common neutral/good fillers ---
+  {.name = "Quiet Week",
+   .note = "No major crises; stores hold steady.",
+   .resourceDeltas = {1, 1, 0, 0, 0, 0, 1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 4,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Salvage Windfall",
+   .note = "Team finds a cache; scrap and meds gained.",
+   .resourceDeltas = {0, 0, 2, 0, 4, 0, 2, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = F_TEAM_FORMED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Clean Water Run",
+   .note = "Purifier output spikes; water stocks rise.",
+   .resourceDeltas = {0, 4, 0, 0, 0, 0, 1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Morale Rally",
+   .note = "Camp bonfire; survivors sing and swap stories.",
+   .resourceDeltas = {-1, 0, 0, 0, 0, 0, 5, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  // --- Pressure / bad events ---
+  {.name = "Raider Probe",
+   .note = "Scouts test your perimeter; ammo spent.",
+   .resourceDeltas = {0, 0, 0, -4, 0, 0, -2, -2},
+   .setFlags = 0, .trackerIndex = 4, .trackerDelta = 1,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = 0, .forbidFlags = F_WALLS_BUILT, .tone = CGC::TONE_BAD},
+
+  {.name = "Sickness Outbreak",
+   .note = "Fever sweeps the barracks; meds drain fast.",
+   .resourceDeltas = {0, 0, -5, 0, 0, 0, -3, 0},
+   .setFlags = 0, .trackerIndex = 4, .trackerDelta = 1,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Supply Rot",
+   .note = "Unsealed stores spoil; food stocks drop.",
+   .resourceDeltas = {-5, 0, 0, 0, 0, 0, -1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Power Fault",
+   .note = "A generator coil blows; power dips sharply.",
+   .resourceDeltas = {0, 0, 0, 0, 0, -4, -1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Expedition Wounds",
+   .note = "Team returns hurt; need meds and rest.",
+   .resourceDeltas = {0, 0, -3, 0, 0, 0, -2, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = F_TEAM_FORMED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Radiation Exposure",
+   .note = "Scout logs rads in old sector; meds consumed.",
+   .resourceDeltas = {0, 0, -4, 0, 0, 0, -1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_TEAM_FORMED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Storm Damage",
+   .note = "Gale tears roofing; scrap spent on repairs.",
+   .resourceDeltas = {0, -2, 0, 0, -3, -2, -2, -1},
+   .setFlags = 0, .trackerIndex = 4, .trackerDelta = 1,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  // --- Faction / story events ---
+  {.name = "River Medics Arrive",
+   .note = "Medics offer meds for food; morale lifts.",
+   .resourceDeltas = {-4, 0, 5, 0, 0, 0, 3, 0},
+   .setFlags = F_FACTION_ALLY, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 0, .repDelta = 3, .weight = 2,
+   .requireFlags = 0, .forbidFlags = F_FACTION_ALLY, .tone = CGC::TONE_GOOD},
+
+  {.name = "Scrap Baron Toll",
+   .note = "Baron crew demands scrap or blocks routes.",
+   .resourceDeltas = {0, 0, 0, 0, -5, 0, -2, 0},
+   .setFlags = 0, .trackerIndex = 4, .trackerDelta = 1,
+   .repIndex = 1, .repDelta = -2, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Signal Cult Offer",
+   .note = "Cultists share a broadcast frequency key.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 2, 2, 0},
+   .setFlags = F_SIGNAL_FOUND, .trackerIndex = 5, .trackerDelta = 1,
+   .repIndex = 2, .repDelta = 2, .weight = 2,
+   .requireFlags = F_RADIO_BUILT, .forbidFlags = F_SIGNAL_FOUND, .tone = CGC::TONE_GOOD},
+
+  {.name = "Rescue Survivor",
+   .note = "Distress call leads to a wounded stranger.",
+   .resourceDeltas = {-2, -1, -2, 0, 0, 0, 4, 0},
+   .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_TEAM_FORMED, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Walls Hold Attack",
+   .note = "Raiders hit the wall; defense absorbs blow.",
+   .resourceDeltas = {0, 0, 0, -2, 0, 0, 2, -1},
+   .setFlags = 0, .trackerIndex = 4, .trackerDelta = 1,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = F_WALLS_BUILT, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Betrayal",
+   .note = "A guard defects; ammo and intel vanish.",
+   .resourceDeltas = {0, 0, 0, -3, 0, 0, -4, -2},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 1,
+   .requireFlags = F_TEAM_FORMED, .forbidFlags = F_FACTION_ALLY, .tone = CGC::TONE_BAD},
+
+  {.name = "Radio Contact",
+   .note = "A voice answers the mast; new regions open.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, 3, 0},
+   .setFlags = F_RADIO_BUILT | F_SIGNAL_FOUND, .trackerIndex = 5, .trackerDelta = 1,
+   .repIndex = 2, .repDelta = 2, .weight = 3,
+   .requireFlags = F_RADIO_BUILT, .forbidFlags = F_SIGNAL_FOUND, .tone = CGC::TONE_GOOD},
+};
+
+// ---------------------------------------------------------------------------
+// Endings  (most-specific first)
+// ---------------------------------------------------------------------------
+static const CGC::EndingDef ENDINGS[] = {
+
+  // Bunker — chose plan bunker, has walls, has low morale (sealed off alone)
+  {.name = "Bunker Rule",
+   .note = "Sealed in, rationed tight. Silence, but alive.",
+   .cond = {.resourceIndex = R_DEFENSE, .resourceMin = 40, .resourceMax = 100,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_ENDGAME | F_PLAN_BUNKER | F_WALLS_BUILT,
+            .forbidFlags = 0, .requiresVictory = true}},
+
+  // Signal Beacon — plan beacon + faction ally + signal found
+  {.name = "Signal Beacon",
+   .note = "Your signal reaches far. Others are coming.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = 5, .trackerMin = 3, .repIndex = 2, .repMin = 2,
+            .requireFlags = F_ENDGAME | F_PLAN_BEACON | F_SIGNAL_FOUND,
+            .forbidFlags = 0, .requiresVictory = true}},
+
+  // River Alliance — ally + signal + high morale
+  {.name = "River Alliance",
+   .note = "Merged with the medics. Two camps, one future.",
+   .cond = {.resourceIndex = R_MORALE, .resourceMin = 50, .resourceMax = 100,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = 0, .repMin = 3,
+            .requireFlags = F_ENDGAME | F_FACTION_ALLY | F_SIGNAL_FOUND,
+            .forbidFlags = 0, .requiresVictory = true}},
+
+  // Mobile Convoy — plan convoy + walls not required + has ammo
+  {.name = "Mobile Convoy",
+   .note = "Wheels rolling. The waste is wide; you'll find a way.",
+   .cond = {.resourceIndex = R_AMMO, .resourceMin = 10, .resourceMax = 99,
+            .trackerIndex = 1, .trackerMin = 5, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_ENDGAME | F_PLAN_CONVOY,
+            .forbidFlags = 0, .requiresVictory = true}},
+
+  // Fortified Town — walls + defense + no specific plan (default fortress)
+  {.name = "Fortress Town",
+   .note = "Walls hold. The settlement endures. That's enough.",
+   .cond = {.resourceIndex = R_DEFENSE, .resourceMin = 35, .resourceMax = 100,
+            .trackerIndex = 3, .trackerMin = 3, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_ENDGAME | F_WALLS_BUILT,
+            .forbidFlags = 0, .requiresVictory = true}},
+
+  // Catch-all victory
+  {.name = "Survivors",
+   .note = "Not glory — just alive. The base stands.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+  // Catch-all loss — starvation or collapse
+  {.name = "Camp Collapse",
+   .note = "Food ran out. The last fire went cold.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0, .requiresVictory = false}},
+};
+
+// ---------------------------------------------------------------------------
+// Tracker labels
+// ---------------------------------------------------------------------------
+static const char* const TRACKER_LABELS[] = {
+  "Days", "Expeditions", "Survivors", "Facilities", "Threats", "Rescues",
+  nullptr, nullptr,
+};
+
+// ---------------------------------------------------------------------------
+// Game definition
+// ---------------------------------------------------------------------------
+static const CGC::DeepGameDefinition DEF = {
+  .title          = "Waste Guild",
+  .slug           = "wasteland-guildmaster",
+  .subtitle       = "Settlement command sim",
+  .saveMagic      = "WGM2",
+  .resources      = RESOURCES,
+  .resourceCount  = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+  .screens        = SCREENS,
+  .screenCount    = sizeof(SCREENS) / sizeof(SCREENS[0]),
+  .events         = EVENTS,
+  .eventCount     = sizeof(EVENTS) / sizeof(EVENTS[0]),
+  .endings        = ENDINGS,
+  .endingCount    = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+  .targetProgress = 175,
+  .accentColor    = 0xFD20,
+  .warningColor   = 0xFD20,
+  .trackerLabels  = TRACKER_LABELS,
+  .trackerLabelCount = 8,
+  .objective      = "Build the settlement; launch a survival plan.",
+  .primaryTracker = 1,  // Expeditions on the hub headline
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
