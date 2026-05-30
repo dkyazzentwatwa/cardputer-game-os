@@ -1,190 +1,434 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Fd", 70, 0, 999, -5, 8},
-    {"Wat", 65, 0, 999, -6, 8},
-    {"Med", 4, 0, 99, -1, 2},
-    {"Fuel", 45, 0, 99, -4, 4},
-    {"Scrap", 10, 0, 999, 3, -1},
-    {"Mor", 75, 0, 100, -2, 6},
-    {"Rad", 0, 0, 100, 3, -2},
-    {"Veh", 85, 0, 100, -4, 5},
+namespace CGC = CardputerGameCore;
+
+// Resource indices — must match RESOURCES order below.
+enum { R_FOOD, R_WAT, R_MED, R_FUEL, R_SCRAP, R_MOR, R_RAD, R_VEH };
+
+// Story / progression flags.
+enum : uint32_t {
+  F_ROAD_OPEN   = 1u << 0,  // party has moved at least once
+  F_SCAV_DONE   = 1u << 1,  // party has scavenged at least once
+  F_FACTION_MET = 1u << 2,  // made contact with any faction
+  F_SIGNAL_RECV = 1u << 3,  // safe-zone radio signal received
+  F_CULT_DEAL   = 1u << 4,  // accepted machine-cult offer
+  F_MEDIC_PACT  = 1u << 5,  // river-medic alliance formed
+  F_CAMP_READY  = 1u << 6,  // enough scrap/morale to found a camp
+  F_SIGNAL_TRAP = 1u << 7,  // signal confirmed as raider bait
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_0[] = {
-    {"Dust 01", "Cross dust #1: applies region hazard pressure"},
-    {"Dry 02", "Cross dry #2: applies region hazard pressure"},
-    {"Clinic 03", "Cross clinic #3: applies region hazard pressure"},
-    {"Orchard 04", "Cross orchard #4: applies region hazard pressure"},
-    {"Flats 05", "Cross flats #5: applies region hazard pressure"},
-    {"Bones 06", "Cross bones #6: applies region hazard pressure"},
-    {"Static 07", "Cross static #7: applies region hazard pressure"},
-    {"Bunker 08", "Cross bunker #8: applies region hazard pressure"},
-    {"Green 09", "Cross green #9: applies region hazard pressure"},
-    {"Safe 10", "Cross safe #10: applies region hazard pressure"},
+// ── RESOURCES ────────────────────────────────────────────────────────────────
+// label  start  min  max  pDelta  safeDelta  warn  bad  inverted
+static const CGC::ResourceDef RESOURCES[] = {
+    {"Fd",    60,   0,  999,   0,    4,   18,   6, false},  // Food (scarcity, not loss)
+    {"Wat",   55,   0,  999,  -1,    3,   16,   5, false},  // Water — depletion ends run
+    {"Med",    8,   0,   99,   0,    1,    4,   1, false},
+    {"Fuel",  42,   0,   99,   0,    2,   12,   4, false},
+    {"Scrap",  8,   0,  999,   0,    0,   -1,  -1, false},  // currency; no warn
+    {"Mor",   72,   0,  100,   0,    2,   28,  10, false},
+    {"Rad",    4,   0,  100,   0,    0,   40,  65, true},   // high is bad; inverted
+    {"Veh",   80,   0,  100,   0,    3,   25,  10, false},
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_1[] = {
-    {"Ration 01", "Settle ration #1: recovers at the cost of time"},
-    {"Treat 02", "Settle treat #2: recovers at the cost of time"},
-    {"Repair 03", "Settle repair #3: recovers at the cost of time"},
-    {"Guard 04", "Settle guard #4: recovers at the cost of time"},
-    {"Cook 05", "Settle cook #5: recovers at the cost of time"},
-    {"Talk 06", "Settle talk #6: recovers at the cost of time"},
-    {"Map 07", "Settle map #7: recovers at the cost of time"},
-    {"Quiet 08", "Settle quiet #8: recovers at the cost of time"},
-    {"Signal 09", "Settle signal #9: recovers at the cost of time"},
-    {"Watch 10", "Settle watch #10: recovers at the cost of time"},
+// ── SCREEN ROW TABLES ─────────────────────────────────────────────────────────
+
+static const CGC::NamedValue ROWS_ROAD[] = {
+    {"Dust Plains",   "Flat run; dust clogs filters."},
+    {"Dry Riverbed",  "Cracked basin; sun hammers Wat."},
+    {"Clinic Road",   "Old med corridor; slow going."},
+    {"Orchard Loop",  "Overgrown track; scav tempting."},
+    {"Flats Run",     "Open highway; good speed, raiders."},
+    {"Bone Valley",   "Rad-hot pass; shields help."},
+    {"Static Stretch","EMF zone; Veh sensors glitch."},
+    {"Bunker Road",   "Cult-marked stretch; watch speed."},
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_2[] = {
-    {"Pharmacy 01", "Scavenge pharmacy #1: trades risk for loot"},
-    {"Fuel Stop 02", "Scavenge fuel stop #2: trades risk for loot"},
-    {"School 03", "Scavenge school #3: trades risk for loot"},
-    {"Depot 04", "Scavenge depot #4: trades risk for loot"},
-    {"Clinic 05", "Scavenge clinic #5: trades risk for loot"},
-    {"Farm 06", "Scavenge farm #6: trades risk for loot"},
-    {"Garage 07", "Scavenge garage #7: trades risk for loot"},
-    {"Tower 08", "Scavenge tower #8: trades risk for loot"},
+static const CGC::NamedValue ROWS_CAMP[] = {
+    {"Ration Stocks",  "Stretch food; cut portions."},
+    {"Treat Wounds",   "Use meds; patch the injured."},
+    {"Night Guard",    "Trade sleep for safety."},
+    {"Cook Big Pot",   "Use food to lift morale."},
+    {"Talk It Out",    "Hold council; hear complaints."},
+    {"Map the Route",  "Plot next leg; reduce surprises."},
+    {"Filter Check",   "Clear filters; cuts Rad gain."},
+    {"Signal Listen",  "Tune radio; watch for the signal."},
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_3[] = {
-    {"Scout 01", "Tend scout #1: changes party condition"},
-    {"Medic 02", "Tend medic #2: changes party condition"},
-    {"Driver 03", "Tend driver #3: changes party condition"},
-    {"Cook 04", "Tend cook #4: changes party condition"},
-    {"Stranger 05", "Tend stranger #5: changes party condition"},
-    {"Guard 06", "Tend guard #6: changes party condition"},
-    {"Teacher 07", "Tend teacher #7: changes party condition"},
-    {"Mechanic 08", "Tend mechanic #8: changes party condition"},
-    {"Scout 09", "Tend scout #9: changes party condition"},
-    {"Medic 10", "Tend medic #10: changes party condition"},
-    {"Driver 11", "Tend driver #11: changes party condition"},
-    {"Cook 12", "Tend cook #12: changes party condition"},
-    {"Stranger 13", "Tend stranger #13: changes party condition"},
-    {"Guard 14", "Tend guard #14: changes party condition"},
-    {"Teacher 15", "Tend teacher #15: changes party condition"},
-    {"Mechanic 16", "Tend mechanic #16: changes party condition"},
+static const CGC::NamedValue ROWS_SCAV[] = {
+    {"Pharmacy Ruin",   "Meds likely; infection risk."},
+    {"Fuel Depot",      "Tank up; vapor fumes and sparks."},
+    {"School Cellar",   "Food cache; slow and enclosed."},
+    {"Hardware Store",  "Scrap gold; structural hazard."},
+    {"Farmstead Barn",  "Food + scrap; loose dogs."},
+    {"Clinic Annex",    "Meds + risk of biohazard."},
+    {"Garage Bay",      "Veh parts; may meet squatters."},
+    {"Radio Tower",     "Signal clues; exposed, Rad risk."},
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_4[] = {
-    {"League 01", "Trade league #1: converts supplies and reputation"},
-    {"Baron 02", "Trade baron #2: converts supplies and reputation"},
-    {"Medic 03", "Trade medic #3: converts supplies and reputation"},
-    {"Scav 04", "Trade scav #4: converts supplies and reputation"},
-    {"Camp 05", "Trade camp #5: converts supplies and reputation"},
-    {"Depot 06", "Trade depot #6: converts supplies and reputation"},
-    {"League 07", "Trade league #7: converts supplies and reputation"},
-    {"Baron 08", "Trade baron #8: converts supplies and reputation"},
-    {"Medic 09", "Trade medic #9: converts supplies and reputation"},
-    {"Scav 10", "Trade scav #10: converts supplies and reputation"},
-    {"Camp 11", "Trade camp #11: converts supplies and reputation"},
-    {"Depot 12", "Trade depot #12: converts supplies and reputation"},
+static const CGC::NamedValue ROWS_REPAIR[] = {
+    {"Patch Body Panels", "Scrap keeps rusting holes shut."},
+    {"Fix Fuel Line",     "Seal leaks; stops Fuel bleed."},
+    {"Swap Tires",        "Pull spares; traction restored."},
+    {"Flush Radiator",    "Clear gunk; engine runs cooler."},
+    {"Rebuild Brake",     "Safety first on bad roads."},
+    {"Weld Frame Crack",  "Structural fix; uses most Scrap."},
 };
 
-static const CardputerGameCore::NamedValue TINY_WASTELAND_ROWS_5[] = {
-    {"Storm 01", "Decide storm #1: sets moral and survival flags"},
-    {"Sickness 02", "Decide sickness #2: sets moral and survival flags"},
-    {"Tribute 03", "Decide tribute #3: sets moral and survival flags"},
-    {"Shortcut 04", "Decide shortcut #4: sets moral and survival flags"},
-    {"Rescue 05", "Decide rescue #5: sets moral and survival flags"},
-    {"Fog 06", "Decide fog #6: sets moral and survival flags"},
-    {"Signal 07", "Decide signal #7: sets moral and survival flags"},
-    {"Raid 08", "Decide raid #8: sets moral and survival flags"},
-    {"Storm 09", "Decide storm #9: sets moral and survival flags"},
-    {"Sickness 10", "Decide sickness #10: sets moral and survival flags"},
-    {"Tribute 11", "Decide tribute #11: sets moral and survival flags"},
-    {"Shortcut 12", "Decide shortcut #12: sets moral and survival flags"},
-    {"Rescue 13", "Decide rescue #13: sets moral and survival flags"},
-    {"Fog 14", "Decide fog #14: sets moral and survival flags"},
-    {"Signal 15", "Decide signal #15: sets moral and survival flags"},
-    {"Raid 16", "Decide raid #16: sets moral and survival flags"},
-    {"Storm 17", "Decide storm #17: sets moral and survival flags"},
-    {"Sickness 18", "Decide sickness #18: sets moral and survival flags"},
-    {"Tribute 19", "Decide tribute #19: sets moral and survival flags"},
-    {"Shortcut 20", "Decide shortcut #20: sets moral and survival flags"},
-    {"Rescue 21", "Decide rescue #21: sets moral and survival flags"},
-    {"Fog 22", "Decide fog #22: sets moral and survival flags"},
-    {"Signal 23", "Decide signal #23: sets moral and survival flags"},
-    {"Raid 24", "Decide raid #24: sets moral and survival flags"},
-    {"Storm 25", "Decide storm #25: sets moral and survival flags"},
-    {"Sickness 26", "Decide sickness #26: sets moral and survival flags"},
-    {"Tribute 27", "Decide tribute #27: sets moral and survival flags"},
-    {"Shortcut 28", "Decide shortcut #28: sets moral and survival flags"},
-    {"Rescue 29", "Decide rescue #29: sets moral and survival flags"},
-    {"Fog 30", "Decide fog #30: sets moral and survival flags"},
+static const CGC::NamedValue ROWS_TRADE[] = {
+    {"League Post",   "Trade scrap for fuel and food."},
+    {"Raider Baron",  "Risky deal; ammo for supplies."},
+    {"River Medics",  "Meds for morale and rep."},
+    {"Free Scavs",    "Scrap barter; fair rates."},
+    {"Settlement",    "Food + water; costs reputation."},
+    {"Depot Merchant","Fuel for scrap and veh parts."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"ROAD", "Drive", TINY_WASTELAND_ROWS_0, 10, {-4, -5, -1, -4, 1, -2, 2, -3}, 5, 0, 1UL},
-    {"CAMP", "Rest", TINY_WASTELAND_ROWS_1, 10, {3, 3, 1, 1, -2, 5, -1, 4}, 3, 1, 2UL},
-    {"SCAV", "Search", TINY_WASTELAND_ROWS_2, 8, {2, 1, 2, 2, 5, -1, 3, -2}, 5, 2, 4UL},
-    {"PARTY", "Check", TINY_WASTELAND_ROWS_3, 16, {-1, -1, 1, 0, -1, 3, -1, 1}, 3, 3, 8UL},
-    {"TRADE", "Barter", TINY_WASTELAND_ROWS_4, 12, {4, 4, 2, 3, -4, 0, -1, 0}, 4, 4, 16UL},
-    {"EVENT", "Choose", TINY_WASTELAND_ROWS_5, 30, {-3, -3, -1, -2, 1, -3, 2, -2}, 4, 5, 32UL},
+static const CGC::NamedValue ROWS_PARTY[] = {
+    {"Check Scout",    "Scout reports route conditions."},
+    {"Check Medic",    "Medic assesses wound severity."},
+    {"Check Driver",   "Driver rates vehicle stress."},
+    {"Check Cook",     "Cook inventories food supply."},
+    {"Recruit Offer",  "Stranger requests to join."},
+    {"Morale Talk",    "Leader speech; boosts spirits."},
+    {"Rest Rotation",  "Rest the most exhausted member."},
+    {"Dismiss Guard",  "Release a low-morale guard."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Tiny Wasteland event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Tiny Wasteland event changes saved state and story flags."},
+static const CGC::NamedValue ROWS_SAFEZONE[] = {
+    {"Enter Gate",     "Show credentials; enter safely."},
+    {"Negotiate Stay", "Bargain long-term settlement."},
+    {"Share Intel",    "Give route map for better terms."},
+    {"Donate Scrap",   "Contribute to the community."},
+    {"Settle Quietly", "Keep a low profile; just rest."},
+    {"Signal Answer",  "Broadcast your position back."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Safe-Zone", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Faction Road", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Lone Survivor", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Convoy Dream", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Camp Founded", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Signal Trap", "Ending path 6: resources, flags, and reputation decide this outcome."},
-    {"Collapse", "Ending path 7: resources, flags, and reputation decide this outcome."},
+// ── SCREENS ───────────────────────────────────────────────────────────────────
+// Field order: title, verb, rows, rowCount, resourceDeltas[8],
+//              progressDelta, trackerIndex, flagMask,
+//              costResource, costAmount, requireFlags,
+//              trackerDelta, objective
+
+static const CGC::DeepScreenDef SCREENS[] = {
+    // ROAD — costs Fuel; sets F_ROAD_OPEN; advances Regions tracker
+    {.title = "ROAD", .verb = "Drive", .rows = ROWS_ROAD, .rowCount = 8,
+     .resourceDeltas = {-3, -4, 0, -3, 0, -1, 2, -2},
+     .progressDelta = 6, .trackerIndex = 0,
+     .flagMask = F_ROAD_OPEN,
+     .costResource = R_FUEL, .costAmount = 6, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Move west; burns Fuel + Water"},
+
+    // CAMP — free; recovers party; advances Days tracker
+    {.title = "CAMP", .verb = "Rest", .rows = ROWS_CAMP, .rowCount = 8,
+     .resourceDeltas = {2, 3, 0, 0, 0, 4, -1, 2},
+     .progressDelta = 1, .trackerIndex = 5,
+     .flagMask = 0,
+     .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Rest and recover the party"},
+
+    // SCAV — costs Mor (stress); sets F_SCAV_DONE; advances Scavenges tracker
+    {.title = "SCAV", .verb = "Search", .rows = ROWS_SCAV, .rowCount = 8,
+     .resourceDeltas = {3, 1, 2, 2, 4, -2, 3, -1},
+     .progressDelta = 3, .trackerIndex = 1,
+     .flagMask = F_SCAV_DONE,
+     .costResource = R_MOR, .costAmount = 6, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Risk the ruins for supplies"},
+
+    // REPAIR — costs Scrap; advances Repairs tracker
+    {.title = "REPAIR", .verb = "Fix", .rows = ROWS_REPAIR, .rowCount = 6,
+     .resourceDeltas = {0, 0, 0, 0, -3, 2, 0, 6},
+     .progressDelta = 2, .trackerIndex = 3,
+     .flagMask = 0,
+     .costResource = R_SCRAP, .costAmount = 5, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Fix the vehicle (-5 Scrap)"},
+
+    // TRADE — needs faction contact; costs Scrap; advances Trades tracker
+    {.title = "TRADE", .verb = "Barter", .rows = ROWS_TRADE, .rowCount = 6,
+     .resourceDeltas = {4, 3, 1, 4, -4, 1, 0, 0},
+     .progressDelta = 2, .trackerIndex = 4,
+     .flagMask = F_FACTION_MET,
+     .costResource = R_SCRAP, .costAmount = 4, .requireFlags = F_ROAD_OPEN,
+     .trackerDelta = 1, .objective = "Barter with factions (-4 Scrap)"},
+
+    // PARTY — free; tracks survivors; advances Survivors tracker
+    {.title = "PARTY", .verb = "Tend", .rows = ROWS_PARTY, .rowCount = 8,
+     .resourceDeltas = {-1, 0, -1, 0, 0, 3, -1, 0},
+     .progressDelta = 1, .trackerIndex = 2,
+     .flagMask = 0,
+     .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Manage the survivors"},
+
+    // SAFE ZONE — gated by signal receipt; endgame screen
+    {.title = "SAFEZONE", .verb = "Enter", .rows = ROWS_SAFEZONE, .rowCount = 6,
+     .resourceDeltas = {6, 6, 3, 0, 0, 6, -3, 0},
+     .progressDelta = 10, .trackerIndex = 0,
+     .flagMask = F_CAMP_READY,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_SIGNAL_RECV,
+     .trackerDelta = 0, .objective = "Reach the safe zone (needs Signal)"},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Tiny Wasteland",
-    "tiny-wasteland",
-    "Survival road drama",
-    "TWST2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    175,
-    0xFD20,
-    0xFD20
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+// Field order: name, note, resourceDeltas[8], setFlags,
+//              trackerIndex, trackerDelta,
+//              repIndex, repDelta,
+//              weight, requireFlags, forbidFlags, tone
+
+static const CGC::EventDef EVENTS[] = {
+    // === Common filler ===
+    {.name = "Quiet mile",
+     .note = "Nothing moves. The road is yours.",
+     .resourceDeltas = {0, 1, 0, 0, 0, 1, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 5, .requireFlags = 0, .forbidFlags = 0,
+     .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Salvage cache",
+     .note = "Crate by the road. Clean scrap inside.",
+     .resourceDeltas = {0, 0, 0, 0, 4, 1, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 3, .requireFlags = 0, .forbidFlags = 0,
+     .tone = CGC::TONE_GOOD},
+
+    {.name = "Water puddle",
+     .note = "Runoff pool — murky but safe enough.",
+     .resourceDeltas = {0, 4, 0, 0, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 3, .requireFlags = 0, .forbidFlags = 0,
+     .tone = CGC::TONE_GOOD},
+
+    // === Hazard / bad ===
+    {.name = "Dust storm",
+     .note = "Choking wall of grit; lose time and Wat.",
+     .resourceDeltas = {0, -4, 0, -2, 0, -2, 1, -1},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 3, .requireFlags = 0, .forbidFlags = 0,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Raider ambush",
+     .note = "Armed crew blocks the road. Pay or fight.",
+     .resourceDeltas = {-4, -2, 0, -3, -3, -3, 0, -2},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = -1,
+     .weight = 2, .requireFlags = F_ROAD_OPEN, .forbidFlags = 0,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Rad pocket",
+     .note = "Hot zone; no warning until it is too late.",
+     .resourceDeltas = {0, -2, 0, 0, 0, -1, 4, -1},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 2, .requireFlags = 0, .forbidFlags = 0,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Sickness outbreak",
+     .note = "Two survivors feverish; meds or morale drops.",
+     .resourceDeltas = {0, -2, -3, 0, 0, -3, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 2, .requireFlags = F_ROAD_OPEN, .forbidFlags = 0,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Axle crack",
+     .note = "Grinding metal. Repair now or lose Veh fast.",
+     .resourceDeltas = {0, 0, 0, 0, -2, -2, 0, -5},
+     .setFlags = 0, .trackerIndex = 3, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 2, .requireFlags = F_ROAD_OPEN, .forbidFlags = 0,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Abandoned cargo",
+     .note = "Someone dumped supplies. A gift or a trap?",
+     .resourceDeltas = {3, 2, 1, 0, 2, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 2, .requireFlags = F_SCAV_DONE, .forbidFlags = 0,
+     .tone = CGC::TONE_GOOD},
+
+    // === Moral choices / faction gates ===
+    {.name = "Stranger at the road",
+     .note = "Wounded traveler. Take them in or drive on?",
+     .resourceDeltas = {-2, -1, -2, 0, 0, 2, 0, 0},
+     .setFlags = F_FACTION_MET, .trackerIndex = 2, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 2,
+     .weight = 2, .requireFlags = F_ROAD_OPEN, .forbidFlags = 0,
+     .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Machine cult toll",
+     .note = "Robed guards demand scrap tribute to pass.",
+     .resourceDeltas = {0, 0, 0, 0, -4, -2, 0, 0},
+     .setFlags = F_FACTION_MET, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 2, .repDelta = 1,
+     .weight = 2, .requireFlags = F_ROAD_OPEN, .forbidFlags = F_CULT_DEAL,
+     .tone = CGC::TONE_BAD},
+
+    {.name = "Cult maintenance deal",
+     .note = "Cult offers Veh repair for a promised service.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 0, 0, 5},
+     .setFlags = F_CULT_DEAL, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 2, .repDelta = 3,
+     .weight = 1, .requireFlags = F_FACTION_MET, .forbidFlags = F_CULT_DEAL,
+     .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "River medic camp",
+     .note = "White flags on the bridge. They heal for free.",
+     .resourceDeltas = {0, 3, 4, 0, 0, 3, -2, 0},
+     .setFlags = F_MEDIC_PACT, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 1, .repDelta = 3,
+     .weight = 1, .requireFlags = F_ROAD_OPEN, .forbidFlags = F_MEDIC_PACT,
+     .tone = CGC::TONE_GOOD},
+
+    {.name = "Safe-zone signal",
+     .note = "Faint coords on the radio. Could be real.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 3, 0, 0},
+     .setFlags = F_SIGNAL_RECV, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 1, .requireFlags = F_SCAV_DONE, .forbidFlags = F_SIGNAL_RECV,
+     .tone = CGC::TONE_GOOD},
+
+    {.name = "Signal confirmed trap",
+     .note = "Raiders on that freq. You note the pattern.",
+     .resourceDeltas = {0, 0, 0, 0, 0, -3, 0, 0},
+     .setFlags = F_SIGNAL_TRAP, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = -2,
+     .weight = 1, .requireFlags = F_SIGNAL_RECV, .forbidFlags = F_SIGNAL_TRAP,
+     .tone = CGC::TONE_BAD},
+
+    // === Scav-gated discoveries ===
+    {.name = "Pharmacy windfall",
+     .note = "Back room untouched. Med box still sealed.",
+     .resourceDeltas = {0, 0, 5, 0, 0, 1, 0, 0},
+     .setFlags = 0, .trackerIndex = 1, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 2, .requireFlags = F_SCAV_DONE, .forbidFlags = 0,
+     .tone = CGC::TONE_GOOD},
+
+    {.name = "Geiger shortcut offer",
+     .note = "Guide says hot ground saves two days. Your call.",
+     .resourceDeltas = {0, 0, 0, 2, 0, -1, 3, -1},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 1, .requireFlags = F_SCAV_DONE, .forbidFlags = 0,
+     .tone = CGC::TONE_NEUTRAL},
+
+    // === Endgame / camp-ready ===
+    {.name = "Good campsite found",
+     .note = "Walls, water, sight lines. This could work.",
+     .resourceDeltas = {0, 2, 0, 0, 2, 4, -1, 0},
+     .setFlags = F_CAMP_READY, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0,
+     .weight = 1, .requireFlags = F_MEDIC_PACT, .forbidFlags = F_CAMP_READY,
+     .tone = CGC::TONE_GOOD},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
-  return DEF;
+// ── ENDINGS ───────────────────────────────────────────────────────────────────
+// Most-specific first. Last two are catch-all victory and loss.
+
+static const CGC::EndingDef ENDINGS[] = {
+    // Signal trap: walked into the ambush
+    {.name = "Signal Trap",
+     .note = "The coords were bait. Raiders took everything.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_SIGNAL_TRAP, .forbidFlags = 0,
+              .requiresVictory = false}},
+
+    // Cult deal gone wrong: Veh high but morale crushed
+    {.name = "Cult Debt",
+     .note = "The cult owns your vehicle now. You serve them.",
+     .cond = {.resourceIndex = R_MOR, .resourceMin = 0, .resourceMax = 20,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CULT_DEAL, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Lone survivor: got there but morale and party devastated
+    {.name = "Lone Survivor",
+     .note = "You made it. No one else did. Was it worth it?",
+     .cond = {.resourceIndex = R_MOR, .resourceMin = 0, .resourceMax = 18,
+              .trackerIndex = 2, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Founded camp: medic pact + camp ready, no safe zone
+    {.name = "Camp Founded",
+     .note = "You built the safe zone. Others will follow.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CAMP_READY | F_MEDIC_PACT, .forbidFlags = F_SIGNAL_RECV,
+              .requiresVictory = true}},
+
+    // Faction settlement: cult deal + no signal trap
+    {.name = "Faction Road",
+     .note = "Cult territory. Strange peace, stranger laws.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CULT_DEAL, .forbidFlags = F_SIGNAL_TRAP,
+              .requiresVictory = true}},
+
+    // Convoy dream: high morale, many survivors, signal received
+    {.name = "Convoy Dream",
+     .note = "Party intact, morale high. A real community.",
+     .cond = {.resourceIndex = R_MOR, .resourceMin = 55, .resourceMax = 100,
+              .trackerIndex = 2, .trackerMin = 4,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_SIGNAL_RECV, .forbidFlags = F_SIGNAL_TRAP,
+              .requiresVictory = true}},
+
+    // Catch-all victory
+    {.name = "Safe Zone",
+     .note = "You reached the gates. The road is behind you.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Catch-all loss
+    {.name = "Collapse",
+     .note = "The wasteland took everything. The road wins.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = false}},
+};
+
+// ── TRACKER LABELS ────────────────────────────────────────────────────────────
+static const char* const TRACKER_LABELS[] = {
+    "Regions", "Scavenges", "Survivors", "Repairs", "Trades", "Days", nullptr, nullptr,
+};
+
+// ── GAME DEFINITION ───────────────────────────────────────────────────────────
+static const CGC::DeepGameDefinition DEF = {
+    .title        = "Tiny Wasteland",
+    .slug         = "tiny-wasteland",
+    .subtitle     = "Survival road drama",
+    .saveMagic    = "TWST2",
+    .resources    = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens      = SCREENS,
+    .screenCount  = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events       = EVENTS,
+    .eventCount   = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings      = ENDINGS,
+    .endingCount  = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 175,
+    .accentColor  = 0xFD20,
+    .warningColor = 0xFD20,
+    .trackerLabels     = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective    = "Drive west; reach a viable ending.",
+    .primaryTracker = 0,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
+    return DEF;
 }
