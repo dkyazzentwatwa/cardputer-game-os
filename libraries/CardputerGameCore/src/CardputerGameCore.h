@@ -37,6 +37,8 @@ struct InputEvent {
   }
 };
 
+enum EventTone : int8_t { TONE_BAD = -1, TONE_NEUTRAL = 0, TONE_GOOD = 1 };
+
 struct ResourceDef {
   const char* label;
   int16_t start;
@@ -44,11 +46,59 @@ struct ResourceDef {
   int16_t maxValue;
   int8_t primaryDelta;
   int8_t safeDelta;
+  // Health thresholds for color-coding. For normal resources, value <= warnBelow
+  // shows amber and <= badBelow shows red. When inverted (e.g. Heat, Debt) the
+  // comparison flips: value >= warnBelow is amber and >= badBelow is red.
+  // Set warnBelow/badBelow to a value the resource can never reach to disable.
+  int16_t warnBelow;
+  int16_t badBelow;
+  bool inverted;
 };
 
 struct NamedValue {
   const char* name;
   const char* note;
+};
+
+// A consequence rolled after the player picks an action row. Events carry real
+// resource/flag/tracker/reputation effects and are selected by weight while being
+// gated on the run's story flags, so the same action can resolve differently as a
+// campaign progresses.
+struct EventDef {
+  const char* name;
+  const char* note;
+  int8_t resourceDeltas[MAX_RESOURCES];
+  uint32_t setFlags;      // ORed into state.flags when this event fires
+  int8_t trackerIndex;    // -1 = none
+  int8_t trackerDelta;
+  int8_t repIndex;        // -1 = none
+  int8_t repDelta;
+  uint8_t weight;         // selection weight, 0 treated as 1
+  uint32_t requireFlags;  // eligible only if ALL these flags are set
+  uint32_t forbidFlags;   // ineligible if ANY of these flags are set
+  int8_t tone;            // EventTone, drives result-line color
+};
+
+// One clause of an ending unlock condition. Sentinel -1 indices disable a clause.
+struct EndingCond {
+  int8_t resourceIndex;   // -1 = ignore
+  int16_t resourceMin;
+  int16_t resourceMax;
+  int8_t trackerIndex;    // -1 = ignore
+  uint8_t trackerMin;
+  int8_t repIndex;        // -1 = ignore
+  int8_t repMin;
+  uint32_t requireFlags;  // ALL must be set
+  uint32_t forbidFlags;   // NONE may be set
+  bool requiresVictory;   // true = victory ending, false = loss ending
+};
+
+// Authored most-specific-first; the first ending whose condition matches the
+// run's victory/loss context wins. Always include a catch-all victory and loss.
+struct EndingDef {
+  const char* name;
+  const char* note;
+  EndingCond cond;
 };
 
 struct GameDefinition {
@@ -85,6 +135,13 @@ struct DeepScreenDef {
   uint8_t progressDelta;
   uint8_t trackerIndex;
   uint32_t flagMask;
+  // Optional economy / gating (appended so old positional initializers still
+  // compile with these zero/default).
+  int8_t costResource;    // -1 = free; else resource index required and spent
+  int16_t costAmount;     // amount required (gate) and deducted (economy)
+  uint32_t requireFlags;  // screen locked until ALL these flags are set (0 = open)
+  int8_t trackerDelta;    // per-action tracker bump; 0 author-default means 1
+  const char* objective;  // optional one-line goal shown on the detail screen
 };
 
 struct DeepGameDefinition {
@@ -96,13 +153,18 @@ struct DeepGameDefinition {
   uint8_t resourceCount;
   const DeepScreenDef* screens;
   uint8_t screenCount;
-  const NamedValue* events;
+  const EventDef* events;
   uint8_t eventCount;
-  const NamedValue* endings;
+  const EndingDef* endings;
   uint8_t endingCount;
   uint16_t targetProgress;
   uint16_t accentColor;
   uint16_t warningColor;
+  // Optional named progress + framing (appended).
+  const char* const* trackerLabels;  // up to MAX_TRACKERS labels; entries may be null
+  uint8_t trackerLabelCount;
+  const char* objective;             // global objective line shown on the hub
+  uint8_t primaryTracker;            // tracker surfaced as the headline chip on the hub
 };
 
 struct GenericGameState {
@@ -206,6 +268,12 @@ class DeepGameRuntime {
   char status[112] = "";
   uint32_t nextAnimMs = 0;
 
+  // Per-turn UI scratch. Recomputed every applyRow and never serialized — the
+  // result screen is only reachable immediately after an action.
+  int16_t lastDeltas[MAX_RESOURCES] = {0};
+  bool lastActionFailed = false;
+  char lastResultLine[64] = "";
+
   void setStatus(const char* text);
   void newGame();
   bool saveExists();
@@ -223,6 +291,11 @@ class DeepGameRuntime {
   void handleHub(const InputEvent& input);
   void handleDetail(const InputEvent& input);
   void applyRow(uint8_t rowIndex);
+  void applyResourceDelta(uint8_t index, int16_t delta);
+  uint8_t selectEvent(uint8_t rowIndex) const;
+  uint8_t selectEnding(bool victory) const;
+  void composeResultLine();
+  uint8_t resourceHealth(uint8_t index) const;
   void finishIfNeeded();
 };
 

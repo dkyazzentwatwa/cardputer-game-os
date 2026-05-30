@@ -91,6 +91,10 @@ static uint16_t blend565(uint16_t a, uint16_t b, uint8_t amount) {
                 ((uint16_t)ab * inv + (uint16_t)bb * amount) / 255);
 }
 
+static uint16_t healthColor(uint8_t health) {
+  return health == 2 ? COLOR_BAD : (health == 1 ? COLOR_WARN : COLOR_GOOD);
+}
+
 static bool isSlug(const char* slug, const char* expected) {
   return slug && strcmp(slug, expected) == 0;
 }
@@ -1128,18 +1132,23 @@ void DeepGameRuntime::drawHub() {
   static constexpr uint8_t hubRowsPerPage = 3;
   d.setTextColor(COLOR_TEXT, gTheme.bg);
   d.setCursor(8, 29);
-  d.printf("Day %-3u Prog %u/%u", state.day, state.progress, def.targetProgress);
+  const char* primaryLabel = (def.trackerLabels && def.primaryTracker < def.trackerLabelCount)
+                                 ? def.trackerLabels[def.primaryTracker]
+                                 : nullptr;
+  if (primaryLabel) {
+    d.printf("D%-3u P%u/%u  %s %u", state.day, state.progress, def.targetProgress,
+             primaryLabel, state.trackers[def.primaryTracker]);
+  } else {
+    d.printf("Day %-3u Prog %u/%u", state.day, state.progress, def.targetProgress);
+  }
+  // Up to four key resources on one line, color-coded by health. The full set of
+  // eight (and the tracker labels) lives on the Status screen.
   int16_t x = 8;
-  int16_t y = 43;
-  for (uint8_t i = 0; i < def.resourceCount && i < 6; ++i) {
-    d.setTextColor(i % 2 == 0 ? COLOR_TEXT : COLOR_DIM, gTheme.bg);
-    d.setCursor(x, y);
+  for (uint8_t i = 0; i < def.resourceCount && i < 4; ++i) {
+    d.setTextColor(healthColor(resourceHealth(i)), gTheme.bg);
+    d.setCursor(x, 43);
     d.printf("%s %d", def.resources[i].label, state.resources[i]);
-    x += 75;
-    if (x > 160) {
-      x = 8;
-      y += 12;
-    }
+    x += 58;
   }
   uint8_t maxPage = def.screenCount == 0 ? 0 : (def.screenCount - 1) / hubRowsPerPage;
   if (page > maxPage) page = maxPage;
@@ -1156,7 +1165,7 @@ void DeepGameRuntime::drawHub() {
   d.setTextColor(COLOR_DIM, gTheme.bg);
   d.setCursor(8, 116);
   d.printf("Pg %u/%u  5 Status  Q title", page + 1, max<uint8_t>((def.screenCount + hubRowsPerPage - 1) / hubRowsPerPage, 1));
-  drawFooter("Pick a deep system");
+  drawFooter(def.objective ? def.objective : "Pick a deep system");
 }
 
 void DeepGameRuntime::drawDetail() {
@@ -1174,7 +1183,7 @@ void DeepGameRuntime::drawDetail() {
   d.setTextColor(COLOR_DIM, gTheme.bg);
   d.setCursor(8, 116);
   d.printf("Pg %u/%u  Enter acts  Q hub", page + 1, max<uint8_t>((screen.rowCount + 4) / 5, 1));
-  drawFooter("W/S row  A/D page");
+  drawFooter(screen.objective ? screen.objective : "W/S row  A/D page");
 }
 
 void DeepGameRuntime::drawResult() {
@@ -1184,31 +1193,63 @@ void DeepGameRuntime::drawResult() {
   uint8_t row = selected + page * 5;
   if (row >= screen.rowCount) row = 0;
   const NamedValue& item = screen.rows[row];
-  const NamedValue& ev = def.events[state.lastEvent % def.eventCount];
+
   d.setTextColor(gTheme.glow, gTheme.bg);
   d.setCursor(8, 30);
   d.print(item.name);
-  drawWrapped(item.note, 8, 46, 37, 2, COLOR_TEXT);
-  drawWrapped(ev.name, 8, 72, 37, 2, COLOR_DIM);
-  d.setTextColor(COLOR_WARN, gTheme.bg);
-  d.setCursor(8, 101);
-  d.print(status);
+  drawWrapped(item.note, 8, 44, 37, 2, COLOR_TEXT);
+
+  if (lastActionFailed) {
+    d.setTextColor(COLOR_BAD, gTheme.bg);
+    d.setCursor(8, 70);
+    d.print(status);
+    drawFooter("Enter back  Q status");
+    return;
+  }
+
+  // Per-turn resource change summary.
+  d.setTextColor(COLOR_DIM, gTheme.bg);
+  d.setCursor(8, 66);
+  d.printf("Day %u", state.day);
+  drawWrapped(lastResultLine, 8, 78, 37, 1, COLOR_TEXT);
+
+  // Event outcome, colored by tone.
+  if (def.eventCount) {
+    const EventDef& ev = def.events[state.lastEvent % def.eventCount];
+    uint16_t toneColor = ev.tone > 0 ? COLOR_GOOD : (ev.tone < 0 ? COLOR_BAD : gTheme.glow);
+    d.setTextColor(toneColor, gTheme.bg);
+    d.setCursor(8, 90);
+    d.print(ev.name);
+    drawWrapped(ev.note, 8, 102, 37, 1, COLOR_DIM);
+  }
   drawFooter("Enter continues  Q status");
 }
 
 void DeepGameRuntime::drawStatus() {
   drawHeader("Status", def.accentColor);
   auto& d = ui();
+  // All resources, color-coded by health.
   for (uint8_t i = 0; i < def.resourceCount && i < 8; ++i) {
-    d.setTextColor(i % 2 == 0 ? COLOR_TEXT : COLOR_DIM, gTheme.bg);
+    d.setTextColor(healthColor(resourceHealth(i)), gTheme.bg);
     d.setCursor(8 + (i % 2) * 110, 28 + (i / 2) * 13);
     d.printf("%s %d", def.resources[i].label, state.resources[i]);
   }
-  drawProgressBar(8, 76, d.width() - 16, 11, state.progress, def.targetProgress, gTheme.accent);
+  drawProgressBar(8, 72, d.width() - 16, 9, state.progress, def.targetProgress, gTheme.accent);
+  // Named tracker progress, two per row.
+  int16_t ty = 84;
+  uint8_t shown = 0;
+  for (uint8_t i = 0; i < def.trackerLabelCount && i < MAX_TRACKERS; ++i) {
+    const char* lbl = def.trackerLabels ? def.trackerLabels[i] : nullptr;
+    if (!lbl) continue;
+    d.setTextColor(COLOR_DIM, gTheme.bg);
+    d.setCursor(8 + (shown % 2) * 110, ty);
+    d.printf("%s %u", lbl, state.trackers[i]);
+    if (shown % 2 == 1) ty += 12;
+    ++shown;
+  }
+  if (shown % 2 == 1) ty += 12;
   d.setTextColor(COLOR_DIM, gTheme.bg);
-  d.setCursor(8, 89);
-  d.printf("Flags %08lX", (unsigned long)state.flags);
-  d.setCursor(8, 101);
+  d.setCursor(8, ty < 110 ? ty : 110);
   d.printf("Save %s  Seed %lu", sdReady() ? "SD" : "--", (unsigned long)state.seed);
   drawFooter("Back returns  4 saves");
 }
@@ -1243,46 +1284,180 @@ void DeepGameRuntime::draw() {
   dirty = false;
 }
 
+void DeepGameRuntime::applyResourceDelta(uint8_t index, int16_t delta) {
+  if (index >= def.resourceCount || index >= MAX_RESOURCES) return;
+  int16_t before = state.resources[index];
+  state.resources[index] = clampValue(before + delta, def.resources[index].minValue,
+                                      def.resources[index].maxValue);
+  // Record the effective (post-clamp) change so the result screen is honest.
+  lastDeltas[index] += (state.resources[index] - before);
+}
+
+uint8_t DeepGameRuntime::selectEvent(uint8_t rowIndex) const {
+  if (def.eventCount == 0) return 0;
+  // Deterministic per-turn mix of the saved seed and turn context.
+  uint32_t r = state.seed ^ ((uint32_t)state.day * 2654435761u) ^
+               ((uint32_t)activeScreen << 8) ^ rowIndex;
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < def.eventCount; ++i) {
+    const EventDef& e = def.events[i];
+    if (e.requireFlags && (state.flags & e.requireFlags) != e.requireFlags) continue;
+    if (e.forbidFlags && (state.flags & e.forbidFlags)) continue;
+    total += e.weight ? e.weight : 1;
+  }
+  if (total == 0) return (rowIndex + activeScreen + state.day) % def.eventCount;
+  uint32_t pick = r % total;
+  for (uint8_t i = 0; i < def.eventCount; ++i) {
+    const EventDef& e = def.events[i];
+    if (e.requireFlags && (state.flags & e.requireFlags) != e.requireFlags) continue;
+    if (e.forbidFlags && (state.flags & e.forbidFlags)) continue;
+    uint32_t w = e.weight ? e.weight : 1;
+    if (pick < w) return i;
+    pick -= w;
+  }
+  return 0;
+}
+
+void DeepGameRuntime::composeResultLine() {
+  lastResultLine[0] = '\0';
+  char* p = lastResultLine;
+  size_t left = sizeof(lastResultLine);
+  for (uint8_t i = 0; i < def.resourceCount && i < MAX_RESOURCES; ++i) {
+    if (lastDeltas[i] == 0) continue;
+    int n = snprintf(p, left, "%s%s%+d", (p == lastResultLine) ? "" : "  ",
+                     def.resources[i].label, lastDeltas[i]);
+    if (n <= 0 || (size_t)n >= left) break;
+    p += n;
+    left -= n;
+  }
+  if (lastResultLine[0] == '\0') copyText(lastResultLine, sizeof(lastResultLine), "No change.");
+}
+
 void DeepGameRuntime::applyRow(uint8_t rowIndex) {
   if (def.screenCount == 0) return;
   const DeepScreenDef& screen = def.screens[activeScreen % def.screenCount];
   if (rowIndex >= screen.rowCount) return;
+
+  // Gate: locked screen.
+  if (screen.requireFlags && (state.flags & screen.requireFlags) != screen.requireFlags) {
+    lastActionFailed = true;
+    setStatus("Locked: requirements not met yet.");
+    view = DEEP_RESULT;
+    dirty = true;
+    return;
+  }
+  // Gate: action cost.
+  if (screen.costResource >= 0 && screen.costResource < def.resourceCount) {
+    if (state.resources[screen.costResource] < screen.costAmount) {
+      lastActionFailed = true;
+      snprintf(status, sizeof(status), "Need %d %s.", screen.costAmount,
+               def.resources[screen.costResource].label);
+      view = DEEP_RESULT;
+      dirty = true;
+      return;
+    }
+  }
+
+  lastActionFailed = false;
+  for (uint8_t i = 0; i < MAX_RESOURCES; ++i) lastDeltas[i] = 0;
+
   state.day++;
-  state.progress = min<uint16_t>(state.progress + screen.progressDelta + 1 + (rowIndex % 3), def.targetProgress);
+  uint8_t progGain = screen.progressDelta + 1 + (rowIndex % 3);
+  state.progress = min<uint16_t>(state.progress + progGain, def.targetProgress);
   state.location = activeScreen;
+
+  // Pick the consequence before applying anything else.
+  uint8_t ev = selectEvent(rowIndex);
+  state.lastEvent = ev;
+  state.lastActor = activeScreen;
+  const EventDef& E = def.events[def.eventCount == 0 ? 0 : ev];
+
+  // Pay the action cost (recorded as a delta).
+  if (screen.costResource >= 0) applyResourceDelta(screen.costResource, -screen.costAmount);
+
+  // Screen deltas (+ small jitter) then event deltas, all clamped and recorded.
   for (uint8_t i = 0; i < def.resourceCount && i < MAX_RESOURCES; ++i) {
     int16_t drift = screen.resourceDeltas[i] + (int8_t)((rowIndex % 3) - 1);
-    state.resources[i] = clampValue(state.resources[i] + drift, def.resources[i].minValue, def.resources[i].maxValue);
+    if (def.eventCount) drift += E.resourceDeltas[i];
+    applyResourceDelta(i, drift);
   }
+
+  // Tracker bump from the screen, plus optional event tracker.
   uint8_t tracker = screen.trackerIndex % MAX_TRACKERS;
-  state.trackers[tracker] = constrain((int)state.trackers[tracker] + 1 + (rowIndex % 2), 0, 255);
-  if (screen.flagMask) {
-    state.flags |= (screen.flagMask << (rowIndex % 4));
+  int16_t tdelta = screen.trackerDelta ? screen.trackerDelta : 1;
+  state.trackers[tracker] = constrain((int)state.trackers[tracker] + tdelta + (rowIndex % 2), 0, 255);
+  if (def.eventCount && E.trackerIndex >= 0) {
+    uint8_t et = E.trackerIndex % MAX_TRACKERS;
+    state.trackers[et] = constrain((int)state.trackers[et] + E.trackerDelta, 0, 255);
   }
-  state.lastEvent = def.eventCount == 0 ? 0 : (rowIndex + activeScreen + state.day) % def.eventCount;
-  state.lastActor = activeScreen;
-  snprintf(status, sizeof(status), "%s +%u progress.", screen.verb, (uint8_t)(screen.progressDelta + 1 + (rowIndex % 3)));
+
+  // Reputation from the event.
+  if (def.eventCount && E.repIndex >= 0) {
+    uint8_t rp = E.repIndex % MAX_REPUTATION;
+    state.reputation[rp] = constrain((int)state.reputation[rp] + E.repDelta, -99, 99);
+  }
+
+  // Flags: the screen sets its flag cleanly (so gating is deterministic), plus
+  // any flags the rolled event advances.
+  if (screen.flagMask) state.flags |= screen.flagMask;
+  if (def.eventCount) state.flags |= E.setFlags;
+
+  composeResultLine();
+  snprintf(status, sizeof(status), "%s +%u progress.", screen.verb, progGain);
+
   finishIfNeeded();
   saveGame();
   view = state.gameOver || state.victory ? DEEP_ENDING : DEEP_RESULT;
   dirty = true;
 }
 
-void DeepGameRuntime::finishIfNeeded() {
-  if (state.progress >= def.targetProgress) {
-    state.victory = true;
-    state.gameOver = false;
-    state.ending = state.resources[0] > 40 ? 0 : (def.endingCount > 1 ? 1 : 0);
-    return;
+uint8_t DeepGameRuntime::selectEnding(bool victory) const {
+  for (uint8_t i = 0; i < def.endingCount; ++i) {
+    const EndingCond& c = def.endings[i].cond;
+    if (c.requiresVictory != victory) continue;
+    if (c.requireFlags && (state.flags & c.requireFlags) != c.requireFlags) continue;
+    if (c.forbidFlags && (state.flags & c.forbidFlags)) continue;
+    if (c.resourceIndex >= 0 && c.resourceIndex < def.resourceCount) {
+      int16_t v = state.resources[c.resourceIndex];
+      if (v < c.resourceMin || v > c.resourceMax) continue;
+    }
+    if (c.trackerIndex >= 0 && state.trackers[c.trackerIndex % MAX_TRACKERS] < c.trackerMin) continue;
+    if (c.repIndex >= 0 && state.reputation[c.repIndex % MAX_REPUTATION] < c.repMin) continue;
+    return i;
   }
-  for (uint8_t i = 0; i < def.resourceCount && i < 4; ++i) {
-    if (state.resources[i] <= def.resources[i].minValue && def.resources[i].primaryDelta < 0) {
-      state.gameOver = true;
-      state.victory = false;
-      state.ending = def.endingCount > 0 ? def.endingCount - 1 : 0;
-      return;
+  // Guaranteed fallback: first victory ending or last loss ending.
+  return victory ? 0 : (def.endingCount ? def.endingCount - 1 : 0);
+}
+
+void DeepGameRuntime::finishIfNeeded() {
+  bool won = state.progress >= def.targetProgress;
+  bool lost = false;
+  if (!won) {
+    for (uint8_t i = 0; i < def.resourceCount && i < 4; ++i) {
+      if (state.resources[i] <= def.resources[i].minValue && def.resources[i].primaryDelta < 0) {
+        lost = true;
+        break;
+      }
     }
   }
+  if (!won && !lost) return;
+  state.victory = won;
+  state.gameOver = !won;
+  state.ending = selectEnding(won);
+}
+
+uint8_t DeepGameRuntime::resourceHealth(uint8_t index) const {
+  if (index >= def.resourceCount) return 0;
+  const ResourceDef& r = def.resources[index];
+  int16_t v = state.resources[index];
+  if (!r.inverted) {
+    if (v <= r.badBelow) return 2;
+    if (v <= r.warnBelow) return 1;
+  } else {
+    if (v >= r.badBelow) return 2;
+    if (v >= r.warnBelow) return 1;
+  }
+  return 0;
 }
 
 void DeepGameRuntime::handleTitle(const InputEvent& input) {

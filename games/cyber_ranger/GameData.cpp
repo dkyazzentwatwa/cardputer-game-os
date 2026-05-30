@@ -1,223 +1,266 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Funds", 35, 0, 999, 4, -2},
-    {"Stam", 80, 0, 100, -5, 8},
-    {"Batt", 85, 0, 100, -6, 10},
-    {"Heat", 5, 0, 100, 4, -5},
-    {"Clues", 0, 0, 99, 2, 0},
-    {"Trust", 35, 0, 100, 1, 2},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep names in sync with RESOURCES order).
+enum { R_FUNDS, R_STAM, R_BATT, R_HEAT, R_BIO, R_SIG, R_TRUST };
+
+// Story flags. Screens set these cleanly (no shift), events advance the arc.
+enum : uint32_t {
+  F_CASE_OPEN     = 1u << 0,  // a case is on the board
+  F_BIO           = 1u << 1,  // gathered biological evidence
+  F_SIG           = 1u << 2,  // gathered signal evidence
+  F_CORP_PROOF    = 1u << 3,  // found proof of hidden corporate sensors
+  F_ENDGAME       = 1u << 4,  // the signal has answered
+  F_ETHICS_BREACH = 1u << 5,  // took sponsor money to bury findings
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_0[] = {
-    {"Pine 01", "Plan pine #1: sets active case"},
-    {"Lake 02", "Plan lake #2: sets active case"},
-    {"Ridge 03", "Plan ridge #3: sets active case"},
-    {"Bog 04", "Plan bog #4: sets active case"},
-    {"Lodge 05", "Plan lodge #5: sets active case"},
-    {"Road 06", "Plan road #6: sets active case"},
-    {"Cave 07", "Plan cave #7: sets active case"},
-    {"Meadow 08", "Plan meadow #8: sets active case"},
+static const CGC::ResourceDef RESOURCES[] = {
+    // label   start min  max  prim safe  warn bad  inverted
+    {"Funds",   40,  0,   999,  0,   0,   12,   4,  false},
+    {"Stam",    80,  0,   100, -1,   6,   30,  12,  false},  // depletion ends the run
+    {"Batt",    85,  0,   100,  0,   8,   25,  10,  false},
+    {"Heat",     5,  0,   100,  1,  -4,   55,  80,  true},   // suspicion: high is bad
+    {"Bio",      0,  0,    99,  0,   0,   -1,  -1,  false},
+    {"Sig",      0,  0,    99,  0,   0,   -1,  -1,  false},
+    {"Trust",   35,  0,   100,  0,   1,   20,   8,  false},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_1[] = {
-    {"Pine 01", "Patrol pine #1: finds field evidence"},
-    {"Lake 02", "Patrol lake #2: finds field evidence"},
-    {"Ridge 03", "Patrol ridge #3: finds field evidence"},
-    {"Bog 04", "Patrol bog #4: finds field evidence"},
-    {"Lodge 05", "Patrol lodge #5: finds field evidence"},
-    {"Road 06", "Patrol road #6: finds field evidence"},
-    {"Cave 07", "Patrol cave #7: finds field evidence"},
-    {"Meadow 08", "Patrol meadow #8: finds field evidence"},
+static const CGC::NamedValue ROWS_STATION[] = {
+    {"Pine Case", "A logger reports lights over Pine Hollow."},
+    {"Lake Case", "Anglers hear a voice under Mirror Lake."},
+    {"Ridge Case", "Tagged elk vanish along Ridgeline 3."},
+    {"Bog Case", "Methane readings spike in the Black Bog."},
+    {"Lodge Case", "The old lodge radio keys itself at night."},
+    {"Road Case", "Dashcams glitch on the fire road at dusk."},
+    {"Cave Case", "Spelunkers find warm cable in cold caves."},
+    {"Review Notes", "Re-read the open case file and plan."},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_2[] = {
-    {"Weather Echo 01", "Inspect weather echo #1: fictional table pings only"},
-    {"Tag Glitch 02", "Inspect tag glitch #2: fictional table pings only"},
-    {"Sensor Ghost 03", "Inspect sensor ghost #3: fictional table pings only"},
-    {"Bio Trace 04", "Inspect bio trace #4: fictional table pings only"},
-    {"Weather Echo 05", "Inspect weather echo #5: fictional table pings only"},
-    {"Tag Glitch 06", "Inspect tag glitch #6: fictional table pings only"},
-    {"Sensor Ghost 07", "Inspect sensor ghost #7: fictional table pings only"},
-    {"Bio Trace 08", "Inspect bio trace #8: fictional table pings only"},
-    {"Weather Echo 09", "Inspect weather echo #9: fictional table pings only"},
-    {"Tag Glitch 10", "Inspect tag glitch #10: fictional table pings only"},
-    {"Sensor Ghost 11", "Inspect sensor ghost #11: fictional table pings only"},
-    {"Bio Trace 12", "Inspect bio trace #12: fictional table pings only"},
-    {"Weather Echo 13", "Inspect weather echo #13: fictional table pings only"},
-    {"Tag Glitch 14", "Inspect tag glitch #14: fictional table pings only"},
-    {"Sensor Ghost 15", "Inspect sensor ghost #15: fictional table pings only"},
-    {"Bio Trace 16", "Inspect bio trace #16: fictional table pings only"},
-    {"Weather Echo 17", "Inspect weather echo #17: fictional table pings only"},
-    {"Tag Glitch 18", "Inspect tag glitch #18: fictional table pings only"},
-    {"Sensor Ghost 19", "Inspect sensor ghost #19: fictional table pings only"},
-    {"Bio Trace 20", "Inspect bio trace #20: fictional table pings only"},
-    {"Weather Echo 21", "Inspect weather echo #21: fictional table pings only"},
-    {"Tag Glitch 22", "Inspect tag glitch #22: fictional table pings only"},
-    {"Sensor Ghost 23", "Inspect sensor ghost #23: fictional table pings only"},
-    {"Bio Trace 24", "Inspect bio trace #24: fictional table pings only"},
-    {"Weather Echo 25", "Inspect weather echo #25: fictional table pings only"},
-    {"Tag Glitch 26", "Inspect tag glitch #26: fictional table pings only"},
-    {"Sensor Ghost 27", "Inspect sensor ghost #27: fictional table pings only"},
-    {"Bio Trace 28", "Inspect bio trace #28: fictional table pings only"},
-    {"Weather Echo 29", "Inspect weather echo #29: fictional table pings only"},
-    {"Tag Glitch 30", "Inspect tag glitch #30: fictional table pings only"},
-    {"Sensor Ghost 31", "Inspect sensor ghost #31: fictional table pings only"},
-    {"Bio Trace 32", "Inspect bio trace #32: fictional table pings only"},
+static const CGC::NamedValue ROWS_PARK[] = {
+    {"Pine Hollow", "Sweep the pines for prints and scat."},
+    {"Mirror Lake", "Walk the shoreline for tracks and hair."},
+    {"Ridgeline 3", "Climb to the elk trail and tag points."},
+    {"Black Bog", "Wade the margins; watch your footing."},
+    {"Fire Road", "Patrol the service road for carcasses."},
+    {"Cave Mouth", "Check the cave entrance for nesting signs."},
+    {"Meadow Rim", "Glass the meadow at the treeline."},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_3[] = {
-    {"Scan 01", "Run scan #1: uses fake deck math only"},
-    {"Map 02", "Run map #2: uses fake deck math only"},
-    {"Tag 03", "Run tag #3: uses fake deck math only"},
-    {"Decode 04", "Run decode #4: uses fake deck math only"},
-    {"Log 05", "Run log #5: uses fake deck math only"},
-    {"Shield 06", "Run shield #6: uses fake deck math only"},
-    {"Savebat 07", "Run savebat #7: uses fake deck math only"},
-    {"Compass 08", "Run compass #8: uses fake deck math only"},
+static const CGC::NamedValue ROWS_SIGNAL[] = {
+    {"Weather Echo", "Tune the band for the storm-echo pattern."},
+    {"Tag Glitch", "Chase the corrupted wildlife-tag ping."},
+    {"Sensor Ghost", "Triangulate a pulse with no listed source."},
+    {"Bio Trace", "Isolate the faint bioelectric carrier."},
+    {"Relay Hum", "Find the hum bleeding off the ridge relay."},
+    {"Buried Line", "Sniff a signal coming from underground."},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_4[] = {
-    {"Pinewake 01", "Study pinewake #1: reveals guide states"},
-    {"Lakewire 02", "Study lakewire #2: reveals guide states"},
-    {"Ridgecat 03", "Study ridgecat #3: reveals guide states"},
-    {"Bogleaf 04", "Study bogleaf #4: reveals guide states"},
-    {"Lodge Moth 05", "Study lodge moth #5: reveals guide states"},
-    {"Road Deer 06", "Study road deer #6: reveals guide states"},
-    {"Cave Echo 07", "Study cave echo #7: reveals guide states"},
-    {"Meadow Crown 08", "Study meadow crown #8: reveals guide states"},
-    {"Pinewake 09", "Study pinewake #9: reveals guide states"},
-    {"Lakewire 10", "Study lakewire #10: reveals guide states"},
-    {"Ridgecat 11", "Study ridgecat #11: reveals guide states"},
-    {"Bogleaf 12", "Study bogleaf #12: reveals guide states"},
-    {"Lodge Moth 13", "Study lodge moth #13: reveals guide states"},
-    {"Road Deer 14", "Study road deer #14: reveals guide states"},
-    {"Cave Echo 15", "Study cave echo #15: reveals guide states"},
-    {"Meadow Crown 16", "Study meadow crown #16: reveals guide states"},
-    {"Pinewake 17", "Study pinewake #17: reveals guide states"},
-    {"Lakewire 18", "Study lakewire #18: reveals guide states"},
-    {"Ridgecat 19", "Study ridgecat #19: reveals guide states"},
-    {"Bogleaf 20", "Study bogleaf #20: reveals guide states"},
+static const CGC::NamedValue ROWS_DECK[] = {
+    {"Scan", "Sweep nearby bands and log what answers."},
+    {"Map", "Render the local node map from captures."},
+    {"Decode", "Run the cipher pass on a captured packet."},
+    {"Tag Read", "Pull the ID off a wildlife tag at range."},
+    {"Log Pull", "Dump a hidden sensor's recent log."},
+    {"Scrub", "Spoof your trace and shed some heat."},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_5[] = {
-    {"Pine Sensor 01", "Resolve pine sensor #1: needs bio and signal evidence"},
-    {"Lake Tag 02", "Resolve lake tag #2: needs bio and signal evidence"},
-    {"Ridge Relay 03", "Resolve ridge relay #3: needs bio and signal evidence"},
-    {"Bog Echo 04", "Resolve bog echo #4: needs bio and signal evidence"},
-    {"Old Lodge 05", "Resolve old lodge #5: needs bio and signal evidence"},
-    {"Fire Road 06", "Resolve fire road #6: needs bio and signal evidence"},
-    {"Cave Line 07", "Resolve cave line #7: needs bio and signal evidence"},
-    {"Drone Meadow 08", "Resolve drone meadow #8: needs bio and signal evidence"},
+static const CGC::NamedValue ROWS_GUIDE[] = {
+    {"Pinewake", "Study the antlered pinewake sightings."},
+    {"Lakewire", "Cross-reference the lakewire hydrophone."},
+    {"Ridgecat", "Note the ridgecat's thermal habits."},
+    {"Bogleaf", "Catalog the bogleaf's false-light lure."},
+    {"Cave Echo", "Map the cave-echo's call-and-answer."},
+    {"Meadow Crown", "Sketch the meadow crown's molt cycle."},
 };
 
-static const CardputerGameCore::NamedValue CYBER_RANGER_ROWS_6[] = {
-    {"Scanner 01", "Upgrade scanner #1: reduces battery or heat"},
-    {"Mapper 02", "Upgrade mapper #2: reduces battery or heat"},
-    {"Decoder 03", "Upgrade decoder #3: reduces battery or heat"},
-    {"Tag Reader 04", "Upgrade tag reader #4: reduces battery or heat"},
-    {"Log Tool 05", "Upgrade log tool #5: reduces battery or heat"},
-    {"Shield 06", "Upgrade shield #6: reduces battery or heat"},
-    {"Saver 07", "Upgrade saver #7: reduces battery or heat"},
-    {"Compass 08", "Upgrade compass #8: reduces battery or heat"},
+static const CGC::NamedValue ROWS_CASE[] = {
+    {"File Report", "Assemble bio + signal proof into a case."},
+    {"Brief Service", "Walk the park service through findings."},
+    {"Publish", "Hand the dossier to a science partner."},
+    {"Confront", "Take the proof straight to the sponsor."},
+    {"Archive", "Lock the evidence in the cold archive."},
+    {"Broadcast", "Answer the signal on its own band."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"STATION", "Plan", CYBER_RANGER_ROWS_0, 8, {2, 3, 2, -2, 1, 2, 0, 0}, 3, 0, 1UL},
-    {"PARK", "Patrol", CYBER_RANGER_ROWS_1, 8, {2, -5, -4, 2, 2, 1, 0, 0}, 5, 1, 2UL},
-    {"SIGNAL", "Inspect", CYBER_RANGER_ROWS_2, 32, {2, -2, -5, 4, 3, 1, 0, 0}, 5, 2, 4UL},
-    {"DECK", "Run", CYBER_RANGER_ROWS_3, 8, {1, -1, -5, 3, 2, 1, 0, 0}, 4, 3, 8UL},
-    {"GUIDE", "Study", CYBER_RANGER_ROWS_4, 20, {0, 0, 0, -1, 2, 1, 0, 0}, 3, 4, 16UL},
-    {"CASE", "Resolve", CYBER_RANGER_ROWS_5, 8, {5, -2, -2, 2, 4, 2, 0, 0}, 6, 5, 32UL},
-    {"GEAR", "Upgrade", CYBER_RANGER_ROWS_6, 8, {-8, 0, 4, -2, 1, 2, 0, 0}, 4, 6, 64UL},
+static const CGC::NamedValue ROWS_GEAR[] = {
+    {"Scanner", "Tune the scanner to cut battery drain."},
+    {"Mapper", "Upgrade the mapper's cache and optics."},
+    {"Decoder", "Load a faster decoder rulebook."},
+    {"Tag Reader", "Boost the tag reader's antenna gain."},
+    {"Shield", "Patch the deck's trace shield."},
+    {"Cells", "Buy fresh cold-rated battery cells."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 31", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 32", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 33", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 34", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 35", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 36", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 37", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 38", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 39", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 40", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 41", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 42", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 43", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 44", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 45", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 46", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 47", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 48", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Pressure 49", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Choice 50", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Discovery 51", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Trouble 52", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Favor 53", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Warning 54", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Breakthrough 55", "A bespoke Cyber Ranger event changes saved state and story flags."},
-    {"Setback 56", "A bespoke Cyber Ranger event changes saved state and story flags."},
+static const CGC::DeepScreenDef SCREENS[] = {
+    {.title = "STATION", .verb = "Plan", .rows = ROWS_STATION, .rowCount = 8,
+     .resourceDeltas = {0, 2, 2, -1, 0, 0, 1, 0}, .progressDelta = 1, .trackerIndex = 0,
+     .flagMask = F_CASE_OPEN, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Open and plan a case"},
+
+    {.title = "PARK", .verb = "Patrol", .rows = ROWS_PARK, .rowCount = 7,
+     .resourceDeltas = {0, -4, -1, 0, 2, 0, 1, 0}, .progressDelta = 2, .trackerIndex = 1,
+     .flagMask = F_BIO, .costResource = R_STAM, .costAmount = 8, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Patrol for bio evidence (-8 Stam)"},
+
+    {.title = "SIGNAL", .verb = "Inspect", .rows = ROWS_SIGNAL, .rowCount = 6,
+     .resourceDeltas = {0, -1, -3, 3, 0, 2, 0, 0}, .progressDelta = 2, .trackerIndex = 2,
+     .flagMask = F_SIG, .costResource = R_BATT, .costAmount = 6, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Inspect anomalies (-6 Batt, +Heat)"},
+
+    {.title = "DECK", .verb = "Run", .rows = ROWS_DECK, .rowCount = 6,
+     .resourceDeltas = {0, -1, -5, -2, 1, 1, 0, 0}, .progressDelta = 2, .trackerIndex = 3,
+     .flagMask = F_CORP_PROOF, .costResource = R_BATT, .costAmount = 8, .requireFlags = F_SIG,
+     .trackerDelta = 1, .objective = "Run deck tools (needs Sig, -8 Batt)"},
+
+    {.title = "GUIDE", .verb = "Study", .rows = ROWS_GUIDE, .rowCount = 6,
+     .resourceDeltas = {0, -1, 1, -1, 0, 0, 2, 0}, .progressDelta = 1, .trackerIndex = 4,
+     .flagMask = 0, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Build the field guide"},
+
+    {.title = "CASE", .verb = "Resolve", .rows = ROWS_CASE, .rowCount = 6,
+     .resourceDeltas = {6, -2, -2, 1, -1, -1, 4, 0}, .progressDelta = 6, .trackerIndex = 5,
+     .flagMask = F_ENDGAME, .costResource = -1, .costAmount = 0, .requireFlags = F_BIO | F_SIG,
+     .trackerDelta = 1, .objective = "Resolve case (needs Bio + Sig)"},
+
+    {.title = "GEAR", .verb = "Upgrade", .rows = ROWS_GEAR, .rowCount = 6,
+     .resourceDeltas = {0, 0, 4, -3, 0, 0, 1, 0}, .progressDelta = 1, .trackerIndex = 6,
+     .flagMask = 0, .costResource = R_FUNDS, .costAmount = 14, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Upgrade gear (-14 Funds)"},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Park Truth", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Science Archive", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Town Cover", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Corp Leak", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Signal Pact", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Burned Deck", "Ending path 6: resources, flags, and reputation decide this outcome."},
+static const CGC::EventDef EVENTS[] = {
+    {.name = "Quiet trail", .note = "The preserve is calm; you catch your breath.",
+     .resourceDeltas = {0, 2, 0, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 4, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Fresh tracks", .note = "Clean cryptid prints set in the mud.",
+     .resourceDeltas = {0, 0, 0, 0, 2, 0, 1, 0}, .setFlags = 0, .trackerIndex = 4,
+     .trackerDelta = 1, .repIndex = 1, .repDelta = 1, .weight = 3, .requireFlags = F_CASE_OPEN,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Clean signal", .note = "A crisp trace cuts through the noise.",
+     .resourceDeltas = {0, 0, 1, -2, 0, 2, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3, .requireFlags = F_CASE_OPEN,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Ranger burnout", .note = "You push too hard and pay for it.",
+     .resourceDeltas = {0, -6, 0, 4, 0, 0, -1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Sponsor drone", .note = "A corporate drone logs your position.",
+     .resourceDeltas = {0, 0, -2, 6, 0, 0, -1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 3, .repDelta = -1, .weight = 2, .requireFlags = F_SIG,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Hidden sensor", .note = "You find an unlogged corporate sensor.",
+     .resourceDeltas = {0, 0, 0, 3, 0, 1, 0, 0}, .setFlags = F_CORP_PROOF, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 1, .repDelta = 2, .weight = 2, .requireFlags = F_SIG,
+     .forbidFlags = F_CORP_PROOF, .tone = CGC::TONE_GOOD},
+
+    {.name = "Battery fault", .note = "A cell fails in the cold.",
+     .resourceDeltas = {0, 0, -8, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 1, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Grateful campers", .note = "Campers tip you and spread the word.",
+     .resourceDeltas = {6, 0, 0, 0, 0, 0, 2, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 0, .repDelta = 3, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Storm rolls in", .note = "Rain drives you back toward shelter.",
+     .resourceDeltas = {0, -3, -2, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Sponsor offer", .note = "Easy money to bury what you found.",
+     .resourceDeltas = {10, 0, 0, -2, 0, 0, -3, 0}, .setFlags = F_ETHICS_BREACH,
+     .trackerIndex = -1, .trackerDelta = 0, .repIndex = 3, .repDelta = 3, .weight = 1,
+     .requireFlags = F_CORP_PROOF, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Breakthrough", .note = "The pieces finally line up.",
+     .resourceDeltas = {0, 0, 0, 0, 1, 1, 1, 0}, .setFlags = 0, .trackerIndex = 5,
+     .trackerDelta = 1, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = F_BIO | F_SIG,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "The signal answers", .note = "Something on the band knows your name.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 3, 2, 0}, .setFlags = F_ENDGAME, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 4, .requireFlags = F_CORP_PROOF,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Gear cache", .note = "You salvage a charged cell from a cache.",
+     .resourceDeltas = {0, 0, 6, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 1, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "False echo", .note = "Just a weather echo after all.",
+     .resourceDeltas = {0, -1, -1, 1, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Cyber Ranger",
-    "cyber-ranger",
-    "Fictional cyber-wilderness",
-    "CYR2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    175,
-    0x07BF,
-    0xFD20
+static const CGC::EndingDef ENDINGS[] = {
+    {.name = "Corp Leak", .note = "Too much heat. The sponsor owns your story now.",
+     .cond = {.resourceIndex = R_HEAT, .resourceMin = 70, .resourceMax = 100,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+    {.name = "Signal Pact", .note = "You answered the band, and it answered back.",
+     .cond = {.resourceIndex = R_SIG, .resourceMin = 6, .resourceMax = 99,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CORP_PROOF | F_ENDGAME, .forbidFlags = F_ETHICS_BREACH,
+              .requiresVictory = true}},
+
+    {.name = "Park Truth", .note = "The corporate dossier reaches the public, clean.",
+     .cond = {.resourceIndex = R_TRUST, .resourceMin = 50, .resourceMax = 100,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CORP_PROOF, .forbidFlags = F_ETHICS_BREACH,
+              .requiresVictory = true}},
+
+    {.name = "Science Archive", .note = "Your field guide becomes the reference record.",
+     .cond = {.resourceIndex = R_BIO, .resourceMin = 6, .resourceMax = 99,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+    {.name = "Town Legend", .note = "The work is done, quietly, and the park endures.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+    {.name = "Lost Patrol", .note = "You ran yourself empty in the deep preserve.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = false}},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+static const char* const TRACKER_LABELS[] = {
+    "Cases", "Patrols", "Signals", "Decodes", "Guide", "Closed", "Gear", nullptr,
+};
+
+static const CGC::DeepGameDefinition DEF = {
+    .title = "Cyber Ranger",
+    .slug = "cyber-ranger",
+    .subtitle = "Fictional cyber-wilderness",
+    .saveMagic = "CYR2",
+    .resources = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens = SCREENS,
+    .screenCount = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events = EVENTS,
+    .eventCount = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings = ENDINGS,
+    .endingCount = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 150,
+    .accentColor = 0x07BF,
+    .warningColor = 0xFD20,
+    .trackerLabels = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective = "Find real evidence; resolve the case.",
+    .primaryTracker = 5,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
