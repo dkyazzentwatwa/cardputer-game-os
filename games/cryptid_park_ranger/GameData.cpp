@@ -1,251 +1,410 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Funds", 40, 0, 999, 3, -2},
-    {"Stam", 80, 0, 100, -6, 10},
-    {"Supply", 25, 0, 99, -3, 4},
-    {"Fear", 5, 0, 100, 4, -4},
-    {"Radio", 80, 0, 100, -4, 5},
-    {"Proof", 0, 0, 99, 2, 0},
-    {"Expose", 0, 0, 100, 2, -2},
-    {"Injury", 0, 0, 9, 1, -1},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep in sync with RESOURCES order).
+enum {
+  R_FUNDS,   // Funding — currency for gear and repairs
+  R_STAM,    // Stamina — patrol limit; hitting 0 ends the run
+  R_SUPPLY,  // Supplies — consumables, bait, sample jars
+  R_BATT,    // Camera battery — needed for photo/video evidence
+  R_PROOF,   // Evidence counter — cumulative proof gathered
+  R_FEAR,    // Fear pressure — high is bad (inverted)
+  R_ETHICS,  // Reputation/Ethics — campers, scientists, park service
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_0[] = {
-    {"Camper 01", "Plan camper #1: sets patrol objective"},
-    {"Fence 02", "Plan fence #2: sets patrol objective"},
-    {"Lights 03", "Plan lights #3: sets patrol objective"},
-    {"Tracks 04", "Plan tracks #4: sets patrol objective"},
-    {"Ridge 05", "Plan ridge #5: sets patrol objective"},
-    {"Lake 06", "Plan lake #6: sets patrol objective"},
-    {"Camper 07", "Plan camper #7: sets patrol objective"},
-    {"Fence 08", "Plan fence #8: sets patrol objective"},
-    {"Lights 09", "Plan lights #9: sets patrol objective"},
-    {"Tracks 10", "Plan tracks #10: sets patrol objective"},
-    {"Ridge 11", "Plan ridge #11: sets patrol objective"},
-    {"Lake 12", "Plan lake #12: sets patrol objective"},
+// Story-arc flags. Set cleanly by screens, advanced by events.
+enum : uint32_t {
+  F_REPORT_OPEN   = 1u << 0,  // an active patrol report is set
+  F_PRINTS_FOUND  = 1u << 1,  // physical print evidence collected
+  F_PHOTO_TAKEN   = 1u << 2,  // photographic evidence captured
+  F_AUDIO_LOGGED  = 1u << 3,  // audio evidence recorded
+  F_GUIDE_ENTRY   = 1u << 4,  // first field-guide entry completed
+  F_ETHICS_BREACH = 1u << 5,  // accepted exploitative sponsor deal
+  F_MYSTERY_DEEP  = 1u << 6,  // deep preserve mystery uncovered
+  F_PRESERVE_OPEN = 1u << 7,  // deep preserve zone unlocked
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_1[] = {
-    {"Forest 01", "Patrol forest #1: applies zone danger"},
-    {"Lake 02", "Patrol lake #2: applies zone danger"},
-    {"Ridge 03", "Patrol ridge #3: applies zone danger"},
-    {"Cave 04", "Patrol cave #4: applies zone danger"},
-    {"Camp 05", "Patrol camp #5: applies zone danger"},
-    {"Road 06", "Patrol road #6: applies zone danger"},
-    {"Bog 07", "Patrol bog #7: applies zone danger"},
-    {"Summit 08", "Patrol summit #8: applies zone danger"},
-    {"Lodge 09", "Patrol lodge #9: applies zone danger"},
-    {"Preserve 10", "Patrol preserve #10: applies zone danger"},
+// ── RESOURCES ──────────────────────────────────────────────────────────────
+static const CGC::ResourceDef RESOURCES[] = {
+    // label    start  min  max  prim safe warn  bad  inverted
+    {"Funds",   45,    0,   999,  0,   0,  14,   5,  false},
+    {"Stam",    80,    0,   100, -1,   5,  28,  12,  false},  // loss trigger
+    {"Supply",  30,    0,    99,  0,   0,  10,   4,  false},
+    {"Batt",    90,    0,   100,  0,   6,  25,  10,  false},
+    {"Proof",    0,    0,    99,  0,   0,  -1,  -1,  false},  // evidence counter
+    {"Fear",     4,    0,   100,  1,  -3,  50,  75,  true},   // high is bad
+    {"Ethics",  40,    0,   100,  0,   1,  18,   8,  false},
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_2[] = {
-    {"Camera 01", "Pack camera #1: sets evidence bonus"},
-    {"Bait 02", "Pack bait #2: sets evidence bonus"},
-    {"Recorder 03", "Pack recorder #3: sets evidence bonus"},
-    {"Sample Kit 04", "Pack sample kit #4: sets evidence bonus"},
-    {"Thermal 05", "Pack thermal #5: sets evidence bonus"},
-    {"Medkit 06", "Pack medkit #6: sets evidence bonus"},
-    {"Rope 07", "Pack rope #7: sets evidence bonus"},
-    {"Battery 08", "Pack battery #8: sets evidence bonus"},
+// ── SCREEN ROWS ────────────────────────────────────────────────────────────
+
+// STATION — read and plan active patrol reports
+static const CGC::NamedValue ROWS_STATION[] = {
+    {"Camper Missing",   "Search report for lost hiker trail."},
+    {"Fence Damage",     "Perimeter breach near the bog edge."},
+    {"Odd Lights",       "Local reports: lights over ridge lake."},
+    {"Strange Tracks",   "Deep prints near the old campground."},
+    {"Injured Animal",   "Wildlife ranger needs assist, road 4."},
+    {"Illegal Logging",  "Bootleg cut spotted on east slope."},
+    {"Research Grant",   "University team asks for field data."},
+    {"Review Notes",     "Reread open reports, adjust plan."},
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_3[] = {
-    {"Print 01", "Decide print #1: raises evidence meters"},
-    {"Photo 02", "Decide photo #2: raises evidence meters"},
-    {"Audio 03", "Decide audio #3: raises evidence meters"},
-    {"Sample 04", "Decide sample #4: raises evidence meters"},
-    {"Sighting 05", "Decide sighting #5: raises evidence meters"},
-    {"Print 06", "Decide print #6: raises evidence meters"},
-    {"Photo 07", "Decide photo #7: raises evidence meters"},
-    {"Audio 08", "Decide audio #8: raises evidence meters"},
-    {"Sample 09", "Decide sample #9: raises evidence meters"},
-    {"Sighting 10", "Decide sighting #10: raises evidence meters"},
-    {"Print 11", "Decide print #11: raises evidence meters"},
-    {"Photo 12", "Decide photo #12: raises evidence meters"},
-    {"Audio 13", "Decide audio #13: raises evidence meters"},
-    {"Sample 14", "Decide sample #14: raises evidence meters"},
-    {"Sighting 15", "Decide sighting #15: raises evidence meters"},
-    {"Print 16", "Decide print #16: raises evidence meters"},
-    {"Photo 17", "Decide photo #17: raises evidence meters"},
-    {"Audio 18", "Decide audio #18: raises evidence meters"},
-    {"Sample 19", "Decide sample #19: raises evidence meters"},
-    {"Sighting 20", "Decide sighting #20: raises evidence meters"},
+// PATROL — travel through park zones, gather raw evidence
+static const CGC::NamedValue ROWS_PATROL[] = {
+    {"Pine Forest",   "Sweep the pines for prints and scat."},
+    {"Mirror Lake",   "Walk shoreline for hair and watermarks."},
+    {"Ridgeline 3",   "Climb elk trail; watch for wing sign."},
+    {"Cave Mouth",    "Check entrance for nesting and musk."},
+    {"Old Campground","Scan the cleared ground for track sets."},
+    {"Fire Road",     "Walk the road edge; note carcasses."},
+    {"Black Bog",     "Wade the margins; sample mud and reed."},
+    {"Summit Trail",  "Glass the summit meadow at treeline."},
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_4[] = {
-    {"Mossback 01", "Study mossback #1: reveals ethical notes"},
-    {"Lake Wisp 02", "Study lake wisp #2: reveals ethical notes"},
-    {"Ridge Antler 03", "Study ridge antler #3: reveals ethical notes"},
-    {"Cave Mute 04", "Study cave mute #4: reveals ethical notes"},
-    {"Ash Cat 05", "Study ash cat #5: reveals ethical notes"},
-    {"Bog Lamp 06", "Study bog lamp #6: reveals ethical notes"},
-    {"Summit Moth 07", "Study summit moth #7: reveals ethical notes"},
-    {"Pine Crown 08", "Study pine crown #8: reveals ethical notes"},
-    {"Mossback 09", "Study mossback #9: reveals ethical notes"},
-    {"Lake Wisp 10", "Study lake wisp #10: reveals ethical notes"},
-    {"Ridge Antler 11", "Study ridge antler #11: reveals ethical notes"},
-    {"Cave Mute 12", "Study cave mute #12: reveals ethical notes"},
-    {"Ash Cat 13", "Study ash cat #13: reveals ethical notes"},
-    {"Bog Lamp 14", "Study bog lamp #14: reveals ethical notes"},
-    {"Summit Moth 15", "Study summit moth #15: reveals ethical notes"},
-    {"Pine Crown 16", "Study pine crown #16: reveals ethical notes"},
+// GEAR — equip cameras, kits, and tools before patrol
+static const CGC::NamedValue ROWS_GEAR[] = {
+    {"Trail Camera",  "Deploy a camera on the known game trail."},
+    {"Audio Recorder","Set a recorder near the ridge water gap."},
+    {"Sample Kit",    "Pack jars, swabs, and cast plaster."},
+    {"Thermal Imager","Loan the thermal unit from the station."},
+    {"Extra Battery", "Buy two spare cold-rated battery cells."},
+    {"Medkit",        "Restock the field aid kit from supply."},
+    {"Bait Station",  "Set a scent lure at a likely crossing."},
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_5[] = {
-    {"Missing Camper 01", "Resolve missing camper #1: closes ranger calls"},
-    {"Fence Break 02", "Resolve fence break #2: closes ranger calls"},
-    {"Odd Lights 03", "Resolve odd lights #3: closes ranger calls"},
-    {"Injured Animal 04", "Resolve injured animal #4: closes ranger calls"},
-    {"Sponsor 05", "Resolve sponsor #5: closes ranger calls"},
-    {"Research 06", "Resolve research #6: closes ranger calls"},
-    {"Missing Camper 07", "Resolve missing camper #7: closes ranger calls"},
-    {"Fence Break 08", "Resolve fence break #8: closes ranger calls"},
-    {"Odd Lights 09", "Resolve odd lights #9: closes ranger calls"},
-    {"Injured Animal 10", "Resolve injured animal #10: closes ranger calls"},
-    {"Sponsor 11", "Resolve sponsor #11: closes ranger calls"},
-    {"Research 12", "Resolve research #12: closes ranger calls"},
+// RESCUE — respond to camper and wildlife distress calls
+static const CGC::NamedValue ROWS_RESCUE[] = {
+    {"Find Lost Hiker",  "Guide the hiker back to trailhead."},
+    {"Treat Injured Elk","Splint the elk and radio the vet."},
+    {"Calm Panicked Camp","Settle the campsite; explain signs."},
+    {"Pull Fence Stray", "Free animal caught in fence damage."},
+    {"Aid Research Team","Help university team reach safe zone."},
+    {"Evacuate Birders", "Move birder group from ridge flash."},
 };
 
-static const CardputerGameCore::NamedValue CRYPTID_PARK_RANGER_ROWS_6[] = {
-    {"Clue 01", "Handle clue #1: changes proof and risk"},
-    {"Weather 02", "Handle weather #2: changes proof and risk"},
-    {"Rescue 03", "Handle rescue #3: changes proof and risk"},
-    {"Ethics 04", "Handle ethics #4: changes proof and risk"},
-    {"Sponsor 05", "Handle sponsor #5: changes proof and risk"},
-    {"Rare 06", "Handle rare #6: changes proof and risk"},
-    {"Camp 07", "Handle camp #7: changes proof and risk"},
-    {"Night 08", "Handle night #8: changes proof and risk"},
-    {"Clue 09", "Handle clue #9: changes proof and risk"},
-    {"Weather 10", "Handle weather #10: changes proof and risk"},
-    {"Rescue 11", "Handle rescue #11: changes proof and risk"},
-    {"Ethics 12", "Handle ethics #12: changes proof and risk"},
-    {"Sponsor 13", "Handle sponsor #13: changes proof and risk"},
-    {"Rare 14", "Handle rare #14: changes proof and risk"},
-    {"Camp 15", "Handle camp #15: changes proof and risk"},
-    {"Night 16", "Handle night #16: changes proof and risk"},
-    {"Clue 17", "Handle clue #17: changes proof and risk"},
-    {"Weather 18", "Handle weather #18: changes proof and risk"},
-    {"Rescue 19", "Handle rescue #19: changes proof and risk"},
-    {"Ethics 20", "Handle ethics #20: changes proof and risk"},
-    {"Sponsor 21", "Handle sponsor #21: changes proof and risk"},
-    {"Rare 22", "Handle rare #22: changes proof and risk"},
-    {"Camp 23", "Handle camp #23: changes proof and risk"},
-    {"Night 24", "Handle night #24: changes proof and risk"},
-    {"Clue 25", "Handle clue #25: changes proof and risk"},
-    {"Weather 26", "Handle weather #26: changes proof and risk"},
-    {"Rescue 27", "Handle rescue #27: changes proof and risk"},
-    {"Ethics 28", "Handle ethics #28: changes proof and risk"},
-    {"Sponsor 29", "Handle sponsor #29: changes proof and risk"},
-    {"Rare 30", "Handle rare #30: changes proof and risk"},
-    {"Camp 31", "Handle camp #31: changes proof and risk"},
-    {"Night 32", "Handle night #32: changes proof and risk"},
-    {"Clue 33", "Handle clue #33: changes proof and risk"},
-    {"Weather 34", "Handle weather #34: changes proof and risk"},
-    {"Rescue 35", "Handle rescue #35: changes proof and risk"},
-    {"Ethics 36", "Handle ethics #36: changes proof and risk"},
-    {"Sponsor 37", "Handle sponsor #37: changes proof and risk"},
-    {"Rare 38", "Handle rare #38: changes proof and risk"},
-    {"Camp 39", "Handle camp #39: changes proof and risk"},
-    {"Night 40", "Handle night #40: changes proof and risk"},
-    {"Clue 41", "Handle clue #41: changes proof and risk"},
-    {"Weather 42", "Handle weather #42: changes proof and risk"},
-    {"Rescue 43", "Handle rescue #43: changes proof and risk"},
-    {"Ethics 44", "Handle ethics #44: changes proof and risk"},
-    {"Sponsor 45", "Handle sponsor #45: changes proof and risk"},
-    {"Rare 46", "Handle rare #46: changes proof and risk"},
-    {"Camp 47", "Handle camp #47: changes proof and risk"},
-    {"Night 48", "Handle night #48: changes proof and risk"},
+// GUIDE — study field-guide entries and cross-reference evidence
+static const CGC::NamedValue ROWS_GUIDE[] = {
+    {"Mossback",      "Note habitat, print shape, bark rub."},
+    {"Lake Wisp",     "Log call frequency and wake pattern."},
+    {"Ridge Antler",  "Cross-ref molt cycle and elevation."},
+    {"Cave Mute",     "Sketch echolocation bounce pattern."},
+    {"Ash Cat",       "Record track depth and claw spread."},
+    {"Bog Lamp",      "Note bioluminescent trigger weather."},
+    {"Summit Moth",   "Map wing-dust zone and wind drift."},
+    {"Pine Crown",    "Log branch-bend height and tree age."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"STATION", "Plan", CRYPTID_PARK_RANGER_ROWS_0, 12, {1, 4, 1, -2, 2, 1, -1, -1}, 3, 0, 1UL},
-    {"ZONES", "Patrol", CRYPTID_PARK_RANGER_ROWS_1, 10, {2, -6, -3, 3, -4, 2, 2, 1}, 5, 1, 2UL},
-    {"GEAR", "Pack", CRYPTID_PARK_RANGER_ROWS_2, 8, {-3, 1, 2, -1, 2, 1, -1, -1}, 3, 2, 4UL},
-    {"TRACK", "Decide", CRYPTID_PARK_RANGER_ROWS_3, 20, {2, -2, -1, 2, -2, 3, 1, 0}, 5, 3, 8UL},
-    {"GUIDE", "Study", CRYPTID_PARK_RANGER_ROWS_4, 16, {0, 0, 1, -1, 0, 2, -1, 0}, 3, 4, 16UL},
-    {"REPORTS", "Resolve", CRYPTID_PARK_RANGER_ROWS_5, 12, {4, -2, -2, 1, -1, 3, -2, -1}, 5, 5, 32UL},
-    {"EVENTS", "Handle", CRYPTID_PARK_RANGER_ROWS_6, 48, {2, -4, -3, 4, -3, 2, 2, 1}, 4, 6, 64UL},
+// DOCUMENT — resolve gathered evidence into a guide entry (gated)
+static const CGC::NamedValue ROWS_DOCUMENT[] = {
+    {"File Print Data",  "Assemble cast and photo into entry."},
+    {"Log Audio Clip",   "Tag the recording with GPS context."},
+    {"Submit Samples",   "Send field samples to the lab queue."},
+    {"Write Sighting",   "Transcribe the full sighting notes."},
+    {"Compile Report",   "Package evidence into the station."},
+    {"Brief Scientist",  "Walk researcher through field data."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 31", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 32", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Pressure 33", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 34", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 35", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 36", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 37", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 38", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 39", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 40", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Pressure 41", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Choice 42", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Discovery 43", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Trouble 44", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Favor 45", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Warning 46", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Breakthrough 47", "A bespoke Cryptid Ranger event changes saved state and story flags."},
-    {"Setback 48", "A bespoke Cryptid Ranger event changes saved state and story flags."},
+// PRESERVE — deep-preserve mystery zone (gated on F_PRESERVE_OPEN)
+static const CGC::NamedValue ROWS_PRESERVE[] = {
+    {"Deep Hollow",      "Enter the old-growth hollow; listen."},
+    {"Underground Spring","Follow the sound to the spring room."},
+    {"Migration Wall",   "Document the carved migration map."},
+    {"Nest Complex",     "Observe the multi-species nest site."},
+    {"Summit Lair",      "Track the summit signature to its den."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Science Guide", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Park Guardian", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Town Legend", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Mystery Solved", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Ethics Breach", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Lost Patrol", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ── SCREENS ────────────────────────────────────────────────────────────────
+static const CGC::DeepScreenDef SCREENS[] = {
+    // STATION: plan reports, recover stamina, gain Ethics — free action
+    {.title = "STATION", .verb = "Plan", .rows = ROWS_STATION, .rowCount = 8,
+     .resourceDeltas  = {0, 3, 0, 2, 0, -1, 1, 0},
+     .progressDelta   = 1, .trackerIndex = 0,
+     .flagMask        = F_REPORT_OPEN,
+     .costResource    = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta    = 1, .objective   = "Plan report; recover Stam"},
+
+    // PATROL: costs Stamina; yields Proof + prints flag
+    {.title = "PATROL", .verb = "Patrol", .rows = ROWS_PATROL, .rowCount = 8,
+     .resourceDeltas  = {0, -5, -1, -1, 2, 1, 0, 0},
+     .progressDelta   = 3, .trackerIndex = 1,
+     .flagMask        = F_PRINTS_FOUND,
+     .costResource    = R_STAM, .costAmount = 10, .requireFlags = 0,
+     .trackerDelta    = 1, .objective   = "Patrol zone (-10 Stam)"},
+
+    // GEAR: costs Funds; charges battery, replenishes supply
+    {.title = "GEAR", .verb = "Equip", .rows = ROWS_GEAR, .rowCount = 7,
+     .resourceDeltas  = {0, 0, 3, 5, 0, -1, 0, 0},
+     .progressDelta   = 1, .trackerIndex = 2,
+     .flagMask        = 0,
+     .costResource    = R_FUNDS, .costAmount = 12, .requireFlags = 0,
+     .trackerDelta    = 1, .objective   = "Equip gear (-12 Funds)"},
+
+    // RESCUE: costs Stamina; boosts Ethics and Funds (donations), cuts Fear
+    {.title = "RESCUE", .verb = "Help", .rows = ROWS_RESCUE, .rowCount = 6,
+     .resourceDeltas  = {4, -4, -1, 0, 0, -2, 3, 0},
+     .progressDelta   = 2, .trackerIndex = 3,
+     .flagMask        = F_PHOTO_TAKEN,
+     .costResource    = R_STAM, .costAmount = 8, .requireFlags = 0,
+     .trackerDelta    = 1, .objective   = "Help people (-8 Stam, +Ethics)"},
+
+    // GUIDE: free study; needs no flags; adds Guide tracker, boosts Ethics
+    {.title = "GUIDE", .verb = "Study", .rows = ROWS_GUIDE, .rowCount = 8,
+     .resourceDeltas  = {0, -1, 0, 0, 0, -1, 2, 0},
+     .progressDelta   = 2, .trackerIndex = 4,
+     .flagMask        = F_AUDIO_LOGGED,
+     .costResource    = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta    = 1, .objective   = "Study and log field guide"},
+
+    // DOCUMENT: costs Supply; gated on prints + photo; resolves proof into guide entry
+    {.title = "DOCUMENT", .verb = "Resolve", .rows = ROWS_DOCUMENT, .rowCount = 6,
+     .resourceDeltas  = {6, -2, -2, 0, 3, -2, 2, 0},
+     .progressDelta   = 6, .trackerIndex = 5,
+     .flagMask        = F_GUIDE_ENTRY,
+     .costResource    = R_SUPPLY, .costAmount = 4,
+     .requireFlags    = F_PRINTS_FOUND | F_PHOTO_TAKEN,
+     .trackerDelta    = 1, .objective   = "File entry (needs Prints+Photo)"},
+
+    // PRESERVE: deep mystery zone — gated on guide entry + mystery flag
+    {.title = "PRESERVE", .verb = "Explore", .rows = ROWS_PRESERVE, .rowCount = 5,
+     .resourceDeltas  = {0, -6, -2, -2, 4, 2, 1, 0},
+     .progressDelta   = 8, .trackerIndex = 6,
+     .flagMask        = F_MYSTERY_DEEP,
+     .costResource    = R_STAM, .costAmount = 14,
+     .requireFlags    = F_GUIDE_ENTRY | F_PRESERVE_OPEN,
+     .trackerDelta    = 1, .objective   = "Explore preserve (-14 Stam)"},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Cryptid Ranger",
-    "cryptid-park-ranger",
-    "Ethical field research",
-    "CPR2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    170,
-    0x07E0,
-    0xFD20
+// ── EVENTS ─────────────────────────────────────────────────────────────────
+static const CGC::EventDef EVENTS[] = {
+    // ── Common fillers ──
+    {.name = "Quiet morning",
+     .note = "The park breathes; you catch your breath.",
+     .resourceDeltas = {0, 2, 0, 0, 0, -1, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 5,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Crisp trail sign",
+     .note = "Clear prints in soft mud — textbook cast.",
+     .resourceDeltas = {0, 0, -1, 0, 2, -1, 1, 0},
+     .setFlags = F_PRINTS_FOUND, .trackerIndex = 4, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 1, .weight = 4,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Rain rolls in",
+     .note = "Storm washes prints; you retreat early.",
+     .resourceDeltas = {0, -3, -1, -2, 0, 2, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Camper grateful",
+     .note = "A hiker donates to the station fund.",
+     .resourceDeltas = {5, 1, 0, 0, 0, -1, 2, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = 2, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Battery fault",
+     .note = "Cold snap kills a cell without warning.",
+     .resourceDeltas = {0, 0, 0, -10, 0, 2, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Ranger burnout",
+     .note = "You pushed too far; legs won't cooperate.",
+     .resourceDeltas = {0, -5, 0, 0, 0, 3, -1, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // ── Report-gated events ──
+    {.name = "Fresh sighting",
+     .note = "Credible sighting near the lake shallows.",
+     .resourceDeltas = {0, 0, 0, -1, 2, 1, 1, 0},
+     .setFlags = F_PHOTO_TAKEN, .trackerIndex = 4, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 2, .weight = 3,
+     .requireFlags = F_REPORT_OPEN, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Territorial display",
+     .note = "Creature charges briefly — you back off.",
+     .resourceDeltas = {0, -2, 0, 0, 1, 4, -1, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_REPORT_OPEN, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Vocalization logged",
+     .note = "Recorder catches a multi-note call at dusk.",
+     .resourceDeltas = {0, 0, -1, -2, 2, -1, 1, 0},
+     .setFlags = F_AUDIO_LOGGED, .trackerIndex = 4, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 1, .weight = 3,
+     .requireFlags = F_REPORT_OPEN, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // ── Prints-gated ──
+    {.name = "Second print set",
+     .note = "A second track line — different individual.",
+     .resourceDeltas = {0, 0, -1, 0, 2, 0, 1, 0},
+     .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 1, .weight = 3,
+     .requireFlags = F_PRINTS_FOUND, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Bait sprung",
+     .note = "Lure worked; camera caught partial fur.",
+     .resourceDeltas = {0, 0, -2, -3, 2, 1, 0, 0},
+     .setFlags = F_PHOTO_TAKEN, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_PRINTS_FOUND, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // ── Ethics decision: sponsor pressure ──
+    {.name = "Sponsor offer",
+     .note = "Cash for sensational proof — no ethics.",
+     .resourceDeltas = {12, 0, 0, 0, 0, 2, -4, 0},
+     .setFlags = F_ETHICS_BREACH, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 3, .repDelta = 3, .weight = 1,
+     .requireFlags = F_GUIDE_ENTRY, .forbidFlags = F_ETHICS_BREACH,
+     .tone = CGC::TONE_BAD},
+
+    // ── Illegal logging ──
+    {.name = "Bootleg cutters",
+     .note = "Loggers spook a nesting site; you file.",
+     .resourceDeltas = {0, -2, 0, 0, 0, 3, -2, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 2, .repDelta = -2, .weight = 2,
+     .requireFlags = F_REPORT_OPEN, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // ── Breakthrough ──
+    {.name = "Breakthrough",
+     .note = "Evidence pieces click — clear picture now.",
+     .resourceDeltas = {0, 0, 0, 0, 3, -2, 2, 0},
+     .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 2, .weight = 2,
+     .requireFlags = F_PRINTS_FOUND | F_PHOTO_TAKEN, .forbidFlags = 0,
+     .tone = CGC::TONE_GOOD},
+
+    // ── Guide-gated: preserve mystery ──
+    {.name = "Deep preserve sign",
+     .note = "Old-growth marks suggest a larger range.",
+     .resourceDeltas = {0, 0, 0, 0, 2, 1, 1, 0},
+     .setFlags = F_PRESERVE_OPEN, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_GUIDE_ENTRY, .forbidFlags = F_PRESERVE_OPEN,
+     .tone = CGC::TONE_GOOD},
+
+    // ── Preserve-gated: mystery resolved ──
+    {.name = "Migration corridor",
+     .note = "The preserve links two unknown zones.",
+     .resourceDeltas = {0, 0, 0, 0, 4, -2, 2, 0},
+     .setFlags = F_MYSTERY_DEEP, .trackerIndex = 6, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = F_PRESERVE_OPEN, .forbidFlags = F_MYSTERY_DEEP,
+     .tone = CGC::TONE_GOOD},
+
+    // ── Mystery-deep good event ──
+    {.name = "New species trace",
+     .note = "Markings match nothing in the database.",
+     .resourceDeltas = {0, 0, 0, -1, 4, -2, 3, 0},
+     .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 3, .weight = 3,
+     .requireFlags = F_MYSTERY_DEEP, .forbidFlags = F_ETHICS_BREACH,
+     .tone = CGC::TONE_GOOD},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
-  return DEF;
+// ── ENDINGS ────────────────────────────────────────────────────────────────
+// Ordered most-specific first; first match wins.
+static const CGC::EndingDef ENDINGS[] = {
+    // 1. Mystery Solved — only if ethics clean, deep mystery found, high proof
+    {.name = "Mystery Solved",
+     .note = "Your corridor data reshapes field biology.",
+     .cond = {.resourceIndex = R_PROOF,  .resourceMin = 18, .resourceMax = 99,
+              .trackerIndex  = 6,        .trackerMin  = 2,
+              .repIndex      = -1,       .repMin      = 0,
+              .requireFlags  = F_MYSTERY_DEEP,
+              .forbidFlags   = F_ETHICS_BREACH,
+              .requiresVictory = true}},
+
+    // 2. Science Guide — guide entries complete, high ethics, no breach
+    {.name = "Science Guide",
+     .note = "The field guide becomes the reference work.",
+     .cond = {.resourceIndex = R_ETHICS, .resourceMin = 50, .resourceMax = 100,
+              .trackerIndex  = 4,        .trackerMin  = 5,
+              .repIndex      = 1,        .repMin      = 3,
+              .requireFlags  = F_GUIDE_ENTRY,
+              .forbidFlags   = F_ETHICS_BREACH,
+              .requiresVictory = true}},
+
+    // 3. Park Guardian — strong rescues and ethics, solid proof
+    {.name = "Park Guardian",
+     .note = "The park service names you chief ranger.",
+     .cond = {.resourceIndex = R_ETHICS, .resourceMin = 40, .resourceMax = 100,
+              .trackerIndex  = 3,        .trackerMin  = 3,
+              .repIndex      = 2,        .repMin      = 2,
+              .requireFlags  = 0,
+              .forbidFlags   = F_ETHICS_BREACH,
+              .requiresVictory = true}},
+
+    // 4. Ethics Breach — took sponsor money; locked from best endings
+    {.name = "Ethics Breach",
+     .note = "Sensational footage aired. The park suffers.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex  = -1, .trackerMin  = 0,
+              .repIndex      = -1, .repMin      = 0,
+              .requireFlags  = F_ETHICS_BREACH,
+              .forbidFlags   = 0,
+              .requiresVictory = true}},
+
+    // 5. Town Legend — catch-all victory (ethics clean)
+    {.name = "Town Legend",
+     .note = "Stories persist; the park endures quietly.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex  = -1, .trackerMin  = 0,
+              .repIndex      = -1, .repMin      = 0,
+              .requireFlags  = 0,
+              .forbidFlags   = 0,
+              .requiresVictory = true}},
+
+    // 6. Lost Patrol — catch-all loss (Stamina depleted)
+    {.name = "Lost Patrol",
+     .note = "You ran yourself empty in the deep preserve.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex  = -1, .trackerMin  = 0,
+              .repIndex      = -1, .repMin      = 0,
+              .requireFlags  = 0,
+              .forbidFlags   = 0,
+              .requiresVictory = false}},
+};
+
+// ── TRACKER LABELS ─────────────────────────────────────────────────────────
+// Index: 0=Reports 1=Patrols 2=Gear 3=Rescues 4=Guide 5=Reports 6=Preserve
+static const char* const TRACKER_LABELS[] = {
+    "Reports", "Patrols", "Gear", "Rescues", "Guide", "Filings", "Preserve", nullptr,
+};
+
+// ── GAME DEFINITION ────────────────────────────────────────────────────────
+static const CGC::DeepGameDefinition DEF = {
+    .title         = "Cryptid Ranger",
+    .slug          = "cryptid-park-ranger",
+    .subtitle      = "Ethical field research",
+    .saveMagic     = "CPR2",
+    .resources     = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens       = SCREENS,
+    .screenCount   = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events        = EVENTS,
+    .eventCount    = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings       = ENDINGS,
+    .endingCount   = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress   = 150,
+    .accentColor      = 0x07E0,
+    .warningColor     = 0xFD20,
+    .trackerLabels    = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective     = "Document cryptids; protect the park.",
+    .primaryTracker = 5,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
+    return DEF;
 }
