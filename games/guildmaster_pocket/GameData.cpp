@@ -1,221 +1,448 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Gold", 70, 0, 999, 5, -4},
-    {"Fame", 5, 0, 999, 3, 0},
-    {"Food", 35, 0, 120, -2, 5},
-    {"Stress", 10, 0, 100, 5, -6},
-    {"Injury", 0, 0, 100, 2, -4},
-    {"Rank", 1, 0, 9, 1, 0},
-    {"Trust", 45, 0, 100, 1, 2},
-    {"Renown", 0, 0, 99, 1, 0},
+namespace CGC = CardputerGameCore;
+
+// Resource indices — keep in sync with RESOURCES array order.
+enum {
+  R_GOLD,    // 0  primary currency; negative primaryDelta → bankruptcy ends run
+  R_FAME,    // 1  guild reputation; gates tiers and unlock events
+  R_STRESS,  // 2  roster morale; high is bad (inverted); wears heroes down
+  R_WOUNDS,  // 3  injury burden; high is bad (inverted); roster attrition
+  R_RANK,    // 4  guild rank tier; gates boss contracts
+  R_TRUST,   // 5  client and town confidence; affects contract flow
+  R_ROSTER,  // 6  count of healthy active heroes
+  R_RENOWN,  // 7  long-term prestige score tracked for endings
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_0[] = {
-    {"Hall 01", "Manage hall #1: sets weekly guild pressure"},
-    {"Client 02", "Manage client #2: sets weekly guild pressure"},
-    {"Region 03", "Manage region #3: sets weekly guild pressure"},
-    {"Supply 04", "Manage supply #4: sets weekly guild pressure"},
-    {"Charter 05", "Manage charter #5: sets weekly guild pressure"},
-    {"Hall 06", "Manage hall #6: sets weekly guild pressure"},
-    {"Client 07", "Manage client #7: sets weekly guild pressure"},
-    {"Region 08", "Manage region #8: sets weekly guild pressure"},
-    {"Supply 09", "Manage supply #9: sets weekly guild pressure"},
-    {"Charter 10", "Manage charter #10: sets weekly guild pressure"},
+// Story flags. Screens set these cleanly; events advance the arc.
+enum : uint32_t {
+  F_BOARD_CHECKED = 1u << 0,  // quest board reviewed; enables PARTY
+  F_PARTY_READY   = 1u << 1,  // party assembled; enables QUEST launch
+  F_QUEST_DONE    = 1u << 2,  // at least one quest completed
+  F_INFIRMARY     = 1u << 3,  // infirmary wing built; enables INFIRMARY screen
+  F_HALL_UPGRADED = 1u << 4,  // hall has one or more structural upgrades
+  F_BOSS_TIER     = 1u << 5,  // rank and library intel reached boss level
+  F_RIVAL_THREAT  = 1u << 6,  // rival guild is actively pressuring the hall
+  F_BOSS_DONE     = 1u << 7,  // a boss contract has been successfully cleared
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_1[] = {
-    {"Rat Cellar 01", "Quest rat cellar #1: runs a staged contract"},
-    {"Moss Road 02", "Quest moss road #2: runs a staged contract"},
-    {"Coin Vault 03", "Quest coin vault #3: runs a staged contract"},
-    {"Moon Mine 04", "Quest moon mine #4: runs a staged contract"},
-    {"Ash Keep 05", "Quest ash keep #5: runs a staged contract"},
-    {"Frost Gate 06", "Quest frost gate #6: runs a staged contract"},
-    {"Signal Ruin 07", "Quest signal ruin #7: runs a staged contract"},
-    {"Baron Road 08", "Quest baron road #8: runs a staged contract"},
-    {"Rat Cellar 09", "Quest rat cellar #9: runs a staged contract"},
-    {"Moss Road 10", "Quest moss road #10: runs a staged contract"},
-    {"Coin Vault 11", "Quest coin vault #11: runs a staged contract"},
-    {"Moon Mine 12", "Quest moon mine #12: runs a staged contract"},
-    {"Ash Keep 13", "Quest ash keep #13: runs a staged contract"},
-    {"Frost Gate 14", "Quest frost gate #14: runs a staged contract"},
-    {"Signal Ruin 15", "Quest signal ruin #15: runs a staged contract"},
-    {"Baron Road 16", "Quest baron road #16: runs a staged contract"},
-    {"Rat Cellar 17", "Quest rat cellar #17: runs a staged contract"},
-    {"Moss Road 18", "Quest moss road #18: runs a staged contract"},
-    {"Coin Vault 19", "Quest coin vault #19: runs a staged contract"},
-    {"Moon Mine 20", "Quest moon mine #20: runs a staged contract"},
-    {"Ash Keep 21", "Quest ash keep #21: runs a staged contract"},
-    {"Frost Gate 22", "Quest frost gate #22: runs a staged contract"},
-    {"Signal Ruin 23", "Quest signal ruin #23: runs a staged contract"},
-    {"Baron Road 24", "Quest baron road #24: runs a staged contract"},
+// ---------------------------------------------------------------------------
+// Resources (7 thematic + 1 prestige counter, 8 total)
+// ---------------------------------------------------------------------------
+static const CGC::ResourceDef RESOURCES[] = {
+  // label    start  min   max  prim safe  warn  bad  inv
+  {"Gold",      65,    0,  999,  -1,   3,   18,   6,  false}, // loss trigger on 0
+  {"Fame",      10,    0,  999,   0,   0,   -1,  -1,  false}, // tier unlock counter
+  {"Stress",    12,    0,  100,   0,   0,   55,  80,  true},  // high is bad
+  {"Wounds",     4,    0,   50,   0,   0,   28,  42,  true},  // high is bad
+  {"Rank",       1,    0,    9,   0,   0,   -1,  -1,  false}, // quest tier gate
+  {"Trust",     42,    0,  100,   0,   1,   20,   8,  false}, // client confidence
+  {"Roster",     6,    1,   18,   0,   0,    2,   1,  false}, // healthy heroes
+  {"Renown",     0,    0,   99,   0,   0,   -1,  -1,  false}, // prestige counter
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_2[] = {
-    {"Fighter 01", "Pick fighter #1: sets class coverage"},
-    {"Scout 02", "Pick scout #2: sets class coverage"},
-    {"Medic 03", "Pick medic #3: sets class coverage"},
-    {"Mage 04", "Pick mage #4: sets class coverage"},
-    {"Guard 05", "Pick guard #5: sets class coverage"},
-    {"Bard 06", "Pick bard #6: sets class coverage"},
-    {"Engineer 07", "Pick engineer #7: sets class coverage"},
-    {"Mystic 08", "Pick mystic #8: sets class coverage"},
+// ---------------------------------------------------------------------------
+// Screen row tables
+// ---------------------------------------------------------------------------
+
+// HALL — weekly guild management; free; builds Trust and recovers Gold trickle
+static const CGC::NamedValue ROWS_HALL[] = {
+  {"Morning Brief",    "Review contracts, ledger, and client mail."},
+  {"Walk the Barracks","Check each bunk; morale and readiness."},
+  {"Client Parlour",   "Hear town requests; cement goodwill."},
+  {"Merchant Escort",  "Quick ward run; gold, easy stress cost."},
+  {"Rest the Hall",    "Light duties; let stress bleed off slowly."},
+  {"Bard Night",       "Music in the common room; stress drops."},
+  {"Audit the Ledger", "Review gold vs. obligations carefully."},
+  {"Post Notice",      "Advertise; attract new recruit interest."},
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_3[] = {
-    {"Fighter 01", "Train fighter #1: improves class lane state"},
-    {"Scout 02", "Train scout #2: improves class lane state"},
-    {"Medic 03", "Train medic #3: improves class lane state"},
-    {"Mage 04", "Train mage #4: improves class lane state"},
-    {"Guard 05", "Train guard #5: improves class lane state"},
-    {"Bard 06", "Train bard #6: improves class lane state"},
-    {"Engineer 07", "Train engineer #7: improves class lane state"},
-    {"Mystic 08", "Train mystic #8: improves class lane state"},
+// BOARD — review quest contracts; sets F_BOARD_CHECKED; small Fame tick
+static const CGC::NamedValue ROWS_BOARD[] = {
+  {"Rat Cellar",     "Minor pest job; low risk, coin for supplies."},
+  {"Moss Road",      "Escort north along the flooded passage."},
+  {"Coin Vault",     "Investigate a robbed merchant strongbox."},
+  {"Moon Mine",      "Clear haunted tunnels in the old moon mine."},
+  {"Ash Keep",       "Recon a keep razed by the Ash Legion."},
+  {"Frost Gate",     "Courier run through the frozen mountain pass."},
+  {"Signal Ruin",    "Survey a ruin that jams all compasses."},
+  {"Baron Road",     "Bodyguard detail for a skittish noble lord."},
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_4[] = {
-    {"Combat 01", "Resolve combat #1: applies role checks and consequences"},
-    {"Trap 02", "Resolve trap #2: applies role checks and consequences"},
-    {"Social 03", "Resolve social #3: applies role checks and consequences"},
-    {"Travel 04", "Resolve travel #4: applies role checks and consequences"},
-    {"Weird 05", "Resolve weird #5: applies role checks and consequences"},
-    {"Boss 06", "Resolve boss #6: applies role checks and consequences"},
-    {"Escort 07", "Resolve escort #7: applies role checks and consequences"},
-    {"Rescue 08", "Resolve rescue #8: applies role checks and consequences"},
-    {"Combat 09", "Resolve combat #9: applies role checks and consequences"},
-    {"Trap 10", "Resolve trap #10: applies role checks and consequences"},
-    {"Social 11", "Resolve social #11: applies role checks and consequences"},
-    {"Travel 12", "Resolve travel #12: applies role checks and consequences"},
-    {"Weird 13", "Resolve weird #13: applies role checks and consequences"},
-    {"Boss 14", "Resolve boss #14: applies role checks and consequences"},
-    {"Escort 15", "Resolve escort #15: applies role checks and consequences"},
-    {"Rescue 16", "Resolve rescue #16: applies role checks and consequences"},
-    {"Combat 17", "Resolve combat #17: applies role checks and consequences"},
-    {"Trap 18", "Resolve trap #18: applies role checks and consequences"},
-    {"Social 19", "Resolve social #19: applies role checks and consequences"},
-    {"Travel 20", "Resolve travel #20: applies role checks and consequences"},
-    {"Weird 21", "Resolve weird #21: applies role checks and consequences"},
-    {"Boss 22", "Resolve boss #22: applies role checks and consequences"},
-    {"Escort 23", "Resolve escort #23: applies role checks and consequences"},
-    {"Rescue 24", "Resolve rescue #24: applies role checks and consequences"},
-    {"Combat 25", "Resolve combat #25: applies role checks and consequences"},
-    {"Trap 26", "Resolve trap #26: applies role checks and consequences"},
-    {"Social 27", "Resolve social #27: applies role checks and consequences"},
-    {"Travel 28", "Resolve travel #28: applies role checks and consequences"},
-    {"Weird 29", "Resolve weird #29: applies role checks and consequences"},
-    {"Boss 30", "Resolve boss #30: applies role checks and consequences"},
-    {"Escort 31", "Resolve escort #31: applies role checks and consequences"},
-    {"Rescue 32", "Resolve rescue #32: applies role checks and consequences"},
+// PARTY — assemble by class lane; sets F_PARTY_READY; requires Board reviewed
+static const CGC::NamedValue ROWS_PARTY[] = {
+  {"Fighter Lane",    "Lead fighter; front-line combat coverage."},
+  {"Scout Lane",      "Point scout; traps and ambush detection."},
+  {"Medic Lane",      "Field medic; treat wounds on the march."},
+  {"Mage Lane",       "Mage support; ruins and arcane threats."},
+  {"Guard Lane",      "Heavy guard; escort and ward protection."},
+  {"Bard Lane",       "Bard cover; stress control and parley."},
+  {"Engineer Lane",   "Engineer slot; doors, devices, and traps."},
+  {"Mystic Lane",     "Mystic read; weird threats and lost lore."},
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_5[] = {
-    {"Infirmary 01", "Build infirmary #1: spends gold for hall levels"},
-    {"Barracks 02", "Build barracks #2: spends gold for hall levels"},
-    {"Library 03", "Build library #3: spends gold for hall levels"},
-    {"Blacksmith 04", "Build blacksmith #4: spends gold for hall levels"},
-    {"Map Room 05", "Build map room #5: spends gold for hall levels"},
-    {"Trophy Wall 06", "Build trophy wall #6: spends gold for hall levels"},
-    {"Infirmary 07", "Build infirmary #7: spends gold for hall levels"},
-    {"Barracks 08", "Build barracks #8: spends gold for hall levels"},
-    {"Library 09", "Build library #9: spends gold for hall levels"},
-    {"Blacksmith 10", "Build blacksmith #10: spends gold for hall levels"},
-    {"Map Room 11", "Build map room #11: spends gold for hall levels"},
-    {"Trophy Wall 12", "Build trophy wall #12: spends gold for hall levels"},
-    {"Infirmary 13", "Build infirmary #13: spends gold for hall levels"},
-    {"Barracks 14", "Build barracks #14: spends gold for hall levels"},
-    {"Library 15", "Build library #15: spends gold for hall levels"},
-    {"Blacksmith 16", "Build blacksmith #16: spends gold for hall levels"},
-    {"Map Room 17", "Build map room #17: spends gold for hall levels"},
-    {"Trophy Wall 18", "Build trophy wall #18: spends gold for hall levels"},
+// QUEST — launch active contract; big resource swing; gated on Board + Party
+static const CGC::NamedValue ROWS_QUEST[] = {
+  {"Launch Contract", "Send the party; burns supplies for the road."},
+  {"Strike Fast",     "Rush the site; less travel, higher combat risk."},
+  {"Scout Approach",  "Route-scout first; lowers trap danger."},
+  {"Negotiate Entry", "Talk before steel; saves sword-stress cost."},
+  {"Night Run",       "Dark travel; rivals notice nothing."},
+  {"Full Kit Out",    "Max supply load; gold cost, fewer wounds."},
 };
 
-static const CardputerGameCore::NamedValue GUILDMASTER_POCKET_ROWS_6[] = {
-    {"Ivory Hall 01", "Answer ivory hall #1: changes rival pressure"},
-    {"Red Ledger 02", "Answer red ledger #2: changes rival pressure"},
-    {"Moon Seat 03", "Answer moon seat #3: changes rival pressure"},
-    {"Ivory Hall 04", "Answer ivory hall #4: changes rival pressure"},
-    {"Red Ledger 05", "Answer red ledger #5: changes rival pressure"},
-    {"Moon Seat 06", "Answer moon seat #6: changes rival pressure"},
-    {"Ivory Hall 07", "Answer ivory hall #7: changes rival pressure"},
-    {"Red Ledger 08", "Answer red ledger #8: changes rival pressure"},
-    {"Moon Seat 09", "Answer moon seat #9: changes rival pressure"},
-    {"Ivory Hall 10", "Answer ivory hall #10: changes rival pressure"},
-    {"Red Ledger 11", "Answer red ledger #11: changes rival pressure"},
-    {"Moon Seat 12", "Answer moon seat #12: changes rival pressure"},
+// INFIRMARY — treat wounds; costs Gold; locked until infirmary is built
+static const CGC::NamedValue ROWS_INFIRMARY[] = {
+  {"Bind Wounds",      "Basic field care; clears light cuts fast."},
+  {"Set Bones",        "Proper splinting for fractures and sprains."},
+  {"Rest Ward",        "Two-day bed rest; deep stress recovery."},
+  {"Herb Poultice",    "Old forest remedies; cheap and reliable."},
+  {"Alchemist Draught","Expensive brew; rapid full-wound clearance."},
+  {"Counsel Session",  "Stress therapy; mind before sword again."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"GUILD", "Manage", GUILDMASTER_POCKET_ROWS_0, 10, {2, 2, -1, -2, 1, 1, 2, 1}, 3, 0, 1UL},
-    {"QUESTS", "Send", GUILDMASTER_POCKET_ROWS_1, 24, {8, 4, -2, 4, 2, 1, 1, 1}, 6, 1, 2UL},
-    {"PARTY", "Pick", GUILDMASTER_POCKET_ROWS_2, 8, {-1, 1, -1, -1, -1, 0, 2, 1}, 3, 2, 4UL},
-    {"ROSTER", "Train", GUILDMASTER_POCKET_ROWS_3, 8, {-3, 1, -1, -2, -1, 0, 2, 2}, 4, 3, 8UL},
-    {"RESULT", "Resolve", GUILDMASTER_POCKET_ROWS_4, 32, {6, 3, -2, 5, 3, 1, -1, 2}, 5, 4, 16UL},
-    {"HALL", "Build", GUILDMASTER_POCKET_ROWS_5, 18, {-8, 2, 1, -3, -2, 1, 2, 3}, 5, 5, 32UL},
-    {"RIVALS", "Answer", GUILDMASTER_POCKET_ROWS_6, 12, {2, 2, 0, 1, 1, 0, -2, 1}, 3, 6, 64UL},
+// UPGRADE — build hall wings; costs Gold; grants Rank and Fame ticks
+static const CGC::NamedValue ROWS_UPGRADE[] = {
+  {"Stone Infirmary",  "Ward wing; unlocks the infirmary screen."},
+  {"Expand Barracks",  "More bunks; raise healthy-hero cap."},
+  {"Stock the Library","Study hall; builds boss-contract intel."},
+  {"Build Blacksmith", "Forge; better gear, fewer wound costs."},
+  {"Chart Room",       "Surveys and maps; unlock new quest routes."},
+  {"Trophy Wall",      "Display victories; fame and trust bonus."},
+  {"Mess Hall Annex",  "Better rations; weekly stress recovery."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Breakthrough 31", "A bespoke Guildmaster event changes saved state and story flags."},
-    {"Setback 32", "A bespoke Guildmaster event changes saved state and story flags."},
+// BOSS — high-stakes elite contracts; gated on Quest history + Hall upgrade
+static const CGC::NamedValue ROWS_BOSS[] = {
+  {"Void Drake",     "Hunt the city-ruin drake. Full party req."},
+  {"Ash Lord",       "Confront the Ash Legion field commander."},
+  {"Curse Broker",   "Capture the hex-merchant alive."},
+  {"Shadow Cartel",  "Raid the shadow guild's sealed vault."},
+  {"Relic Warden",   "Recover the sealed relic before rivals do."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Great Guild", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Hero Graveyard", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Rival Merger", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Quiet Hall", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Treaty Desk", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Bankrupt Hall", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ---------------------------------------------------------------------------
+// Screens (7 total)
+// ---------------------------------------------------------------------------
+static const CGC::DeepScreenDef SCREENS[] = {
+
+  // HALL: free weekly review; no flags required; small gold trickle + trust
+  {.title       = "HALL",
+   .verb        = "Manage",
+   .rows        = ROWS_HALL,
+   .rowCount    = 8,
+   .resourceDeltas = {3, 0, -2, 0, 0, 2, 0, 0},
+   .progressDelta  = 1,
+   .trackerIndex   = 0,
+   .flagMask       = 0,
+   .costResource   = -1, .costAmount = 0, .requireFlags = 0,
+   .trackerDelta   = 1,
+   .objective      = "Run the hall; keep Trust and Gold up"},
+
+  // BOARD: review contracts; sets F_BOARD_CHECKED; free; small Fame bump
+  {.title       = "BOARD",
+   .verb        = "Review",
+   .rows        = ROWS_BOARD,
+   .rowCount    = 8,
+   .resourceDeltas = {0, 1, 0, 0, 0, 1, 0, 0},
+   .progressDelta  = 1,
+   .trackerIndex   = 1,
+   .flagMask       = F_BOARD_CHECKED,
+   .costResource   = -1, .costAmount = 0, .requireFlags = 0,
+   .trackerDelta   = 1,
+   .objective      = "Pick a contract from the board"},
+
+  // PARTY: assemble class lanes; sets F_PARTY_READY; needs Board reviewed
+  {.title       = "PARTY",
+   .verb        = "Assemble",
+   .rows        = ROWS_PARTY,
+   .rowCount    = 8,
+   .resourceDeltas = {0, 0, 1, 0, 0, 0, 0, 0},
+   .progressDelta  = 1,
+   .trackerIndex   = 2,
+   .flagMask       = F_PARTY_READY,
+   .costResource   = -1, .costAmount = 0, .requireFlags = F_BOARD_CHECKED,
+   .trackerDelta   = 1,
+   .objective      = "Cover class lanes (needs Board)"},
+
+  // QUEST: launch contract; big swing; costs 10 Gold; needs Board + Party
+  {.title       = "QUEST",
+   .verb        = "Launch",
+   .rows        = ROWS_QUEST,
+   .rowCount    = 6,
+   .resourceDeltas = {8, 4, 3, 3, 0, 1, 0, 1},
+   .progressDelta  = 8,
+   .trackerIndex   = 3,
+   .flagMask       = F_QUEST_DONE,
+   .costResource   = R_GOLD, .costAmount = 10,
+   .requireFlags   = F_BOARD_CHECKED | F_PARTY_READY,
+   .trackerDelta   = 1,
+   .objective      = "Launch quest (Board+Party, -10 Gold)"},
+
+  // INFIRMARY: treat wounds + stress; 8 Gold; locked until wing is built
+  {.title       = "INFIRMARY",
+   .verb        = "Treat",
+   .rows        = ROWS_INFIRMARY,
+   .rowCount    = 6,
+   .resourceDeltas = {0, 0, -4, -5, 0, 1, 0, 0},
+   .progressDelta  = 1,
+   .trackerIndex   = 4,
+   .flagMask       = F_INFIRMARY,
+   .costResource   = R_GOLD, .costAmount = 8,
+   .requireFlags   = F_INFIRMARY,
+   .trackerDelta   = 1,
+   .objective      = "Heal the roster (Infirmary built, -8 Gold)"},
+
+  // UPGRADE: build hall wings; 18 Gold; grants Rank + Renown
+  {.title       = "UPGRADE",
+   .verb        = "Build",
+   .rows        = ROWS_UPGRADE,
+   .rowCount    = 7,
+   .resourceDeltas = {0, 1, 0, 0, 1, 2, 1, 1},
+   .progressDelta  = 2,
+   .trackerIndex   = 5,
+   .flagMask       = F_HALL_UPGRADED,
+   .costResource   = R_GOLD, .costAmount = 18,
+   .requireFlags   = 0,
+   .trackerDelta   = 1,
+   .objective      = "Upgrade the hall (-18 Gold)"},
+
+  // BOSS: elite contracts; 15 Gold; needs Quest history + Hall upgrade
+  {.title       = "BOSS",
+   .verb        = "Contract",
+   .rows        = ROWS_BOSS,
+   .rowCount    = 5,
+   .resourceDeltas = {22, 8, 4, 3, 1, 2, 0, 3},
+   .progressDelta  = 20,
+   .trackerIndex   = 6,
+   .flagMask       = F_BOSS_DONE,
+   .costResource   = R_GOLD, .costAmount = 15,
+   .requireFlags   = F_QUEST_DONE | F_HALL_UPGRADED,
+   .trackerDelta   = 1,
+   .objective      = "Boss contract (Quest+Upgrade, -15 Gold)"},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Guildmaster",
-    "guildmaster-pocket",
-    "Tiny quest desk",
-    "GMP2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    175,
-    0xA145,
-    0xFD20
+// ---------------------------------------------------------------------------
+// Events (16 total — common fillers, mid-arc beats, endgame escalation)
+// ---------------------------------------------------------------------------
+static const CGC::EventDef EVENTS[] = {
+
+  // --- Common filler (always eligible, low drama) ---
+
+  {.name = "Quiet week",
+   .note = "Light jobs trickle in; hall stays calm.",
+   .resourceDeltas = {3, 0, -1, 0, 0, 1, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 4,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Town donation",
+   .note = "A grateful merchant tips the front desk.",
+   .resourceDeltas = {4, 0, 0, 0, 0, 2, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 0, .repDelta = 2, .weight = 3,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Mess-hall argument",
+   .note = "Two heroes squabble over the last ration.",
+   .resourceDeltas = {0, 0, 4, 0, 0, -1, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Bandit ambush",
+   .note = "Road bandits catch the party mid-march.",
+   .resourceDeltas = {-5, 0, 3, 4, 0, -1, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_PARTY_READY, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Scout reads the path",
+   .note = "Point scout spots a pit trap in time.",
+   .resourceDeltas = {0, 0, 1, -3, 0, 1, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_PARTY_READY, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Supply windfall",
+   .note = "Scavenged loot sells well at the market.",
+   .resourceDeltas = {6, 0, 0, 0, 0, 0, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  // --- Mid-arc events (require at least one quest) ---
+
+  {.name = "Grateful client",
+   .note = "A satisfied patron sends a bonus purse.",
+   .resourceDeltas = {5, 2, 0, 0, 0, 2, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 0, .repDelta = 2, .weight = 3,
+   .requireFlags = F_QUEST_DONE, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Hero takes a bad hit",
+   .note = "A fighter limps home with a broken rib.",
+   .resourceDeltas = {0, 0, 4, 5, 0, 0, -1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = F_QUEST_DONE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Rival undercut",
+   .note = "Red Ledger Guild steals a board contract.",
+   .resourceDeltas = {-3, -1, 2, 0, 0, -2, 0, 0},
+   .setFlags = F_RIVAL_THREAT, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 2, .repDelta = -2, .weight = 2,
+   .requireFlags = F_QUEST_DONE, .forbidFlags = F_RIVAL_THREAT, .tone = CGC::TONE_BAD},
+
+  {.name = "Veteran steps up",
+   .note = "A loyal hero takes point without being asked.",
+   .resourceDeltas = {0, 2, -3, -2, 0, 1, 0, 1},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 1, .repDelta = 2, .weight = 2,
+   .requireFlags = F_QUEST_DONE, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Stress break",
+   .note = "Overworked scout snaps and refuses duty.",
+   .resourceDeltas = {0, 0, 5, 0, 0, -2, -1, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_QUEST_DONE, .forbidFlags = F_INFIRMARY, .tone = CGC::TONE_BAD},
+
+  // --- Hall-upgrade events ---
+
+  {.name = "Forge dividend",
+   .note = "Blacksmith turns salvage into coin and kit.",
+   .resourceDeltas = {6, 1, 0, -1, 0, 1, 0, 1},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 0, .repDelta = 1, .weight = 2,
+   .requireFlags = F_HALL_UPGRADED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Library intelligence",
+   .note = "A chart reveals the boss-contract approach.",
+   .resourceDeltas = {0, 2, -2, 0, 1, 1, 0, 1},
+   .setFlags = F_BOSS_TIER, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_HALL_UPGRADED, .forbidFlags = F_BOSS_TIER, .tone = CGC::TONE_GOOD},
+
+  // --- Rival-pressure events (require active rival threat) ---
+
+  {.name = "Rival public duel",
+   .note = "Moon Seat Guild demands a street challenge.",
+   .resourceDeltas = {0, 0, 4, 2, 0, -2, 0, 0},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 2, .repDelta = -1, .weight = 2,
+   .requireFlags = F_RIVAL_THREAT, .forbidFlags = F_BOSS_DONE, .tone = CGC::TONE_BAD},
+
+  // --- Boss-tier events ---
+
+  {.name = "Lord's commission",
+   .note = "A city lord summons your best party now.",
+   .resourceDeltas = {0, 3, 2, 0, 0, 2, 0, 2},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 0, .repDelta = 2, .weight = 3,
+   .requireFlags = F_BOSS_TIER, .forbidFlags = F_BOSS_DONE, .tone = CGC::TONE_GOOD},
+
+  // --- Endgame / post-boss ---
+
+  {.name = "Rival surrenders",
+   .note = "Ivory Hall asks to merge under your banner.",
+   .resourceDeltas = {8, 4, -3, -2, 1, 3, 1, 2},
+   .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+   .repIndex = 2, .repDelta = 4, .weight = 2,
+   .requireFlags = F_BOSS_DONE, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ---------------------------------------------------------------------------
+// Endings (6 — most-specific first; catch-all victory last, then loss)
+// ---------------------------------------------------------------------------
+static const CGC::EndingDef ENDINGS[] = {
+
+  // 1. Legendary guild: boss done, high fame, hall upgraded — beloved name
+  {.name = "Beloved Guild",
+   .note = "Songs fill every tavern. Your hall stands for a generation.",
+   .cond = {.resourceIndex = R_FAME, .resourceMin = 40, .resourceMax = 999,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_BOSS_DONE | F_HALL_UPGRADED,
+            .forbidFlags  = 0, .requiresVictory = true}},
+
+  // 2. Iron Mercenaries: boss done but wounds and stress are high
+  {.name = "Iron Mercenaries",
+   .note = "Fame, coin, and a roster of walking scars. Results matter.",
+   .cond = {.resourceIndex = R_WOUNDS, .resourceMin = 25, .resourceMax = 50,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_BOSS_DONE,
+            .forbidFlags  = 0, .requiresVictory = true}},
+
+  // 3. Scholar Guild: hall upgraded, high renown, no boss needed
+  {.name = "Scholar Guild",
+   .note = "Your maps and records outlast every blade. Rare praise.",
+   .cond = {.resourceIndex = R_RENOWN, .resourceMin = 20, .resourceMax = 99,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_HALL_UPGRADED | F_QUEST_DONE,
+            .forbidFlags  = F_BOSS_DONE, .requiresVictory = true}},
+
+  // 4. Town Protector: high trust, quests done, no boss — quiet local legend
+  {.name = "Town Protector",
+   .note = "The town sleeps soundly. A modest hall the people trust.",
+   .cond = {.resourceIndex = R_TRUST, .resourceMin = 65, .resourceMax = 100,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = F_QUEST_DONE,
+            .forbidFlags  = F_BOSS_DONE, .requiresVictory = true}},
+
+  // 5. Catch-all victory — workmanlike but standing
+  {.name = "Steady Hall",
+   .note = "Not legendary, but the doors stay open. A working guild.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+  // 6. Bankrupt loss — gold at zero, heroes scatter
+  {.name = "Empty Coffers",
+   .note = "The gold is gone. Heroes scatter; the board goes dark.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0, .requiresVictory = false}},
+};
+
+// ---------------------------------------------------------------------------
+// Tracker labels (index matches trackerIndex in screens/events)
+// ---------------------------------------------------------------------------
+static const char* const TRACKER_LABELS[] = {
+  "Hall",       // 0 — weekly management turns
+  "Contracts",  // 1 — board reviews
+  "Parties",    // 2 — party assemblies
+  "Quests",     // 3 — quests launched  ← primaryTracker shown on hub
+  "Healed",     // 4 — infirmary treatments
+  "Upgrades",   // 5 — hall builds
+  "Bosses",     // 6 — boss contracts cleared
+  nullptr,
+};
+
+// ---------------------------------------------------------------------------
+// Game definition
+// ---------------------------------------------------------------------------
+static const CGC::DeepGameDefinition DEF = {
+  .title             = "Guildmaster",
+  .slug              = "guildmaster-pocket",
+  .subtitle          = "Tiny quest desk",
+  .saveMagic         = "GMP2",
+  .resources         = RESOURCES,
+  .resourceCount     = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+  .screens           = SCREENS,
+  .screenCount       = sizeof(SCREENS) / sizeof(SCREENS[0]),
+  .events            = EVENTS,
+  .eventCount        = sizeof(EVENTS) / sizeof(EVENTS[0]),
+  .endings           = ENDINGS,
+  .endingCount       = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+  .targetProgress    = 175,
+  .accentColor       = 0xA145,
+  .warningColor      = 0xFD20,
+  .trackerLabels     = TRACKER_LABELS,
+  .trackerLabelCount = 8,
+  .objective         = "Build fame; clear the boss contract.",
+  .primaryTracker    = 3,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
