@@ -1,261 +1,367 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Cash", 40, 0, 999, 3, -2},
-    {"Time", 30, 0, 99, -2, 3},
-    {"Rep", 25, 0, 100, 2, 0},
-    {"Heat", 5, 0, 100, 3, -3},
-    {"Clues", 0, 0, 99, 2, 0},
-    {"Trust", 25, 0, 100, 1, 1},
+namespace CGC = CardputerGameCore;
+
+// Resource indices — keep in sync with RESOURCES order.
+enum { R_CASH, R_TIME, R_CLUES, R_LEADS, R_HEAT, R_REP, R_TRUST, R_LINKS };
+
+// Story flags — screens/events set these to gate later screens and events.
+enum : uint32_t {
+  F_CASE_OPEN   = 1u << 0,  // a case is active on the board
+  F_CANVASSED   = 1u << 1,  // at least one location visited
+  F_INTERVIEWED = 1u << 2,  // at least one suspect interviewed
+  F_LINKED      = 1u << 3,  // first clue link found via COMPARE
+  F_DIRTY_MONEY = 1u << 4,  // accepted a dirty bribe
+  F_META_CLUE   = 1u << 5,  // found a city-corruption meta-clue
+  F_ACCUSED     = 1u << 6,  // made at least one accusation
+  F_EXPOSED     = 1u << 7,  // corrupt ring exposed (endgame unlock)
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_0[] = {
-    {"Glass Cat 01", "Open glass cat #1: starts or reviews a case"},
-    {"Missing Key 02", "Open missing key #2: starts or reviews a case"},
-    {"Red Receipt 03", "Open red receipt #3: starts or reviews a case"},
-    {"Old Names 04", "Open old names #4: starts or reviews a case"},
+// ── Resources ────────────────────────────────────────────────────────────────
+// Cash:  operations currency (spend via INFORMANTS, no passive drain)
+// Time:  deadline pressure — primaryDelta -1; hitting 0 → loss
+// Clues: evidence counter — no drain, endings read it
+// Leads: sourced from informants — gates COMPARE + ACCUSE
+// Heat:  inverted (high is bad): bad leads, press leaks drive it up
+// Rep:   public standing — endings read it
+// Trust: client/witness confidence — inverted warn (lose trust fast = bad)
+// Links: contradiction links found — endings read it
+
+static const CGC::ResourceDef RESOURCES[] = {
+    // label   start min  max  prim safe  warn bad  inverted
+    {"Cash",    45,  0,  999,  0,   0,   12,   4,  false},
+    {"Time",    40,  0,   99, -1,   3,   14,   6,  false},  // loss trigger
+    {"Clues",    0,  0,   99,  0,   0,   -1,  -1,  false},
+    {"Leads",    3,  0,   30,  0,   0,   -1,  -1,  false},
+    {"Heat",     4,  0,  100,  0,   0,   55,  80,  true},   // high is bad
+    {"Rep",     30,  0,  100,  0,   0,   12,   4,  false},
+    {"Trust",   30,  0,  100,  0,   0,   10,   4,  false},
+    {"Links",    0,  0,   30,  0,   0,   -1,  -1,  false},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_1[] = {
-    {"Client 01", "Study client #1: reveals required proof"},
-    {"Clock 02", "Study clock #2: reveals required proof"},
-    {"Suspect 03", "Study suspect #3: reveals required proof"},
-    {"Motive 04", "Study motive #4: reveals required proof"},
-    {"Reward 05", "Study reward #5: reveals required proof"},
-    {"Risk 06", "Study risk #6: reveals required proof"},
-    {"Client 07", "Study client #7: reveals required proof"},
-    {"Clock 08", "Study clock #8: reveals required proof"},
-    {"Suspect 09", "Study suspect #9: reveals required proof"},
-    {"Motive 10", "Study motive #10: reveals required proof"},
-    {"Reward 11", "Study reward #11: reveals required proof"},
-    {"Risk 12", "Study risk #12: reveals required proof"},
+// ── Screen row tables ─────────────────────────────────────────────────────────
+
+// AGENCY — take a new case; each case entry is a real case name + client hook.
+static const CGC::NamedValue ROWS_AGENCY[] = {
+    {"Glass Cat",    "Stolen statuette; art dealer client."},
+    {"Missing Key",  "Landlord locked out; tenant vanished."},
+    {"Red Receipt",  "Faked expense; corporate whistleblower."},
+    {"Old Names",    "Cold-case; widow wants the truth."},
+    {"Pier Debt",    "Dock boss says someone skimmed the take."},
+    {"Night Shift",  "Factory guard found dead at 3 a.m."},
+    {"Silver Fork",  "Heirloom missing; suspect list is long."},
+    {"Review Board", "Revisit open case notes; plan next move."},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_2[] = {
-    {"Diner 01", "Visit diner #1: finds location clues"},
-    {"Alley 02", "Visit alley #2: finds location clues"},
-    {"Office 03", "Visit office #3: finds location clues"},
-    {"Pier 04", "Visit pier #4: finds location clues"},
-    {"Library 05", "Visit library #5: finds location clues"},
-    {"Depot 06", "Visit depot #6: finds location clues"},
-    {"Diner 07", "Visit diner #7: finds location clues"},
-    {"Alley 08", "Visit alley #8: finds location clues"},
-    {"Office 09", "Visit office #9: finds location clues"},
-    {"Pier 10", "Visit pier #10: finds location clues"},
-    {"Library 11", "Visit library #11: finds location clues"},
-    {"Depot 12", "Visit depot #12: finds location clues"},
+// CANVASS — visit city locations; costs Time, yields Clues.
+static const CGC::NamedValue ROWS_CANVASS[] = {
+    {"Corner Diner",   "Wait for the morning regulars to talk."},
+    {"Back Alley",     "Check for dropped evidence near the bins."},
+    {"City Archives",  "Pull property and warrant records."},
+    {"Waterfront Pier","Watch the cargo crews for familiar faces."},
+    {"Pawnshop Row",   "See if stolen goods surfaced for sale."},
+    {"Rail Depot",     "Ask the night crew about unusual cargo."},
+    {"Park Bench",     "Old regulars see everything and forget nothing."},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_3[] = {
-    {"Alibi 01", "Ask alibi #1: marks statements and contradictions"},
-    {"Debt 02", "Ask debt #2: marks statements and contradictions"},
-    {"Noise 03", "Ask noise #3: marks statements and contradictions"},
-    {"Receipt 04", "Ask receipt #4: marks statements and contradictions"},
-    {"Key 05", "Ask key #5: marks statements and contradictions"},
-    {"Motive 06", "Ask motive #6: marks statements and contradictions"},
-    {"Witness 07", "Ask witness #7: marks statements and contradictions"},
-    {"Time 08", "Ask time #8: marks statements and contradictions"},
-    {"Alibi 09", "Ask alibi #9: marks statements and contradictions"},
-    {"Debt 10", "Ask debt #10: marks statements and contradictions"},
-    {"Noise 11", "Ask noise #11: marks statements and contradictions"},
-    {"Receipt 12", "Ask receipt #12: marks statements and contradictions"},
-    {"Key 13", "Ask key #13: marks statements and contradictions"},
-    {"Motive 14", "Ask motive #14: marks statements and contradictions"},
-    {"Witness 15", "Ask witness #15: marks statements and contradictions"},
-    {"Time 16", "Ask time #16: marks statements and contradictions"},
-    {"Alibi 17", "Ask alibi #17: marks statements and contradictions"},
-    {"Debt 18", "Ask debt #18: marks statements and contradictions"},
-    {"Noise 19", "Ask noise #19: marks statements and contradictions"},
-    {"Receipt 20", "Ask receipt #20: marks statements and contradictions"},
-    {"Key 21", "Ask key #21: marks statements and contradictions"},
-    {"Motive 22", "Ask motive #22: marks statements and contradictions"},
-    {"Witness 23", "Ask witness #23: marks statements and contradictions"},
-    {"Time 24", "Ask time #24: marks statements and contradictions"},
-    {"Alibi 25", "Ask alibi #25: marks statements and contradictions"},
-    {"Debt 26", "Ask debt #26: marks statements and contradictions"},
-    {"Noise 27", "Ask noise #27: marks statements and contradictions"},
-    {"Receipt 28", "Ask receipt #28: marks statements and contradictions"},
-    {"Key 29", "Ask key #29: marks statements and contradictions"},
-    {"Motive 30", "Ask motive #30: marks statements and contradictions"},
-    {"Witness 31", "Ask witness #31: marks statements and contradictions"},
-    {"Time 32", "Ask time #32: marks statements and contradictions"},
-    {"Alibi 33", "Ask alibi #33: marks statements and contradictions"},
-    {"Debt 34", "Ask debt #34: marks statements and contradictions"},
-    {"Noise 35", "Ask noise #35: marks statements and contradictions"},
-    {"Receipt 36", "Ask receipt #36: marks statements and contradictions"},
-    {"Key 37", "Ask key #37: marks statements and contradictions"},
-    {"Motive 38", "Ask motive #38: marks statements and contradictions"},
-    {"Witness 39", "Ask witness #39: marks statements and contradictions"},
-    {"Time 40", "Ask time #40: marks statements and contradictions"},
-    {"Alibi 41", "Ask alibi #41: marks statements and contradictions"},
-    {"Debt 42", "Ask debt #42: marks statements and contradictions"},
-    {"Noise 43", "Ask noise #43: marks statements and contradictions"},
-    {"Receipt 44", "Ask receipt #44: marks statements and contradictions"},
-    {"Key 45", "Ask key #45: marks statements and contradictions"},
-    {"Motive 46", "Ask motive #46: marks statements and contradictions"},
-    {"Witness 47", "Ask witness #47: marks statements and contradictions"},
-    {"Time 48", "Ask time #48: marks statements and contradictions"},
+// INTERVIEW — question suspects; costs Time, yields statements (Trust fuel).
+static const CGC::NamedValue ROWS_INTERVIEW[] = {
+    {"Ask about alibi",   "Where were you that night?"},
+    {"Ask about debts",   "Who do you owe money to?"},
+    {"Ask about noises",  "Did you hear anything unusual?"},
+    {"Show the receipt",  "Can you explain this transaction?"},
+    {"Ask about the key", "Who else had access to the room?"},
+    {"Probe the motive",  "Why would someone want this done?"},
+    {"Name a witness",    "Who can confirm your story?"},
+    {"Press on timing",   "Walk me through the exact timeline."},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_4[] = {
-    {"Receipt 01", "Read receipt #1: reviews discovered proof"},
-    {"Footprint 02", "Read footprint #2: reviews discovered proof"},
-    {"Photo 03", "Read photo #3: reviews discovered proof"},
-    {"Ledger 04", "Read ledger #4: reviews discovered proof"},
-    {"Key 05", "Read key #5: reviews discovered proof"},
-    {"Thread 06", "Read thread #6: reviews discovered proof"},
-    {"Ticket 07", "Read ticket #7: reviews discovered proof"},
-    {"Note 08", "Read note #8: reviews discovered proof"},
-    {"Receipt 09", "Read receipt #9: reviews discovered proof"},
-    {"Footprint 10", "Read footprint #10: reviews discovered proof"},
-    {"Photo 11", "Read photo #11: reviews discovered proof"},
-    {"Ledger 12", "Read ledger #12: reviews discovered proof"},
-    {"Key 13", "Read key #13: reviews discovered proof"},
-    {"Thread 14", "Read thread #14: reviews discovered proof"},
-    {"Ticket 15", "Read ticket #15: reviews discovered proof"},
-    {"Note 16", "Read note #16: reviews discovered proof"},
-    {"Receipt 17", "Read receipt #17: reviews discovered proof"},
-    {"Footprint 18", "Read footprint #18: reviews discovered proof"},
-    {"Photo 19", "Read photo #19: reviews discovered proof"},
-    {"Ledger 20", "Read ledger #20: reviews discovered proof"},
-    {"Key 21", "Read key #21: reviews discovered proof"},
-    {"Thread 22", "Read thread #22: reviews discovered proof"},
-    {"Ticket 23", "Read ticket #23: reviews discovered proof"},
-    {"Note 24", "Read note #24: reviews discovered proof"},
-    {"Receipt 25", "Read receipt #25: reviews discovered proof"},
-    {"Footprint 26", "Read footprint #26: reviews discovered proof"},
-    {"Photo 27", "Read photo #27: reviews discovered proof"},
-    {"Ledger 28", "Read ledger #28: reviews discovered proof"},
-    {"Key 29", "Read key #29: reviews discovered proof"},
-    {"Thread 30", "Read thread #30: reviews discovered proof"},
-    {"Ticket 31", "Read ticket #31: reviews discovered proof"},
-    {"Note 32", "Read note #32: reviews discovered proof"},
-    {"Receipt 33", "Read receipt #33: reviews discovered proof"},
-    {"Footprint 34", "Read footprint #34: reviews discovered proof"},
-    {"Photo 35", "Read photo #35: reviews discovered proof"},
-    {"Ledger 36", "Read ledger #36: reviews discovered proof"},
-    {"Key 37", "Read key #37: reviews discovered proof"},
-    {"Thread 38", "Read thread #38: reviews discovered proof"},
-    {"Ticket 39", "Read ticket #39: reviews discovered proof"},
-    {"Note 40", "Read note #40: reviews discovered proof"},
+// COMPARE — cross-examine clue pairs; gated on F_CANVASSED + F_INTERVIEWED.
+// Costs a Lead each time. Yields Links and surfaces contradictions.
+static const CGC::NamedValue ROWS_COMPARE[] = {
+    {"Receipt vs Alibi",  "Timestamp on receipt kills the alibi."},
+    {"Photo vs Timeline", "Camera angle narrows the window."},
+    {"Key vs Witness",    "Witness never saw the key returned."},
+    {"Ledger vs Debt",    "Numbers on the ledger don't match claims."},
+    {"Ticket vs Location","Ticket places suspect across town."},
+    {"Thread vs Coat",    "Fiber matches only one suspect's coat."},
+    {"Note vs Statement", "Handwriting in note differs from form."},
+    {"Door log vs Time",  "Building log says door was sealed early."},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_5[] = {
-    {"Receipt+Alibi 01", "Link receipt+alibi #1: creates notebook link tokens"},
-    {"Photo+Time 02", "Link photo+time #2: creates notebook link tokens"},
-    {"Key+Door 03", "Link key+door #3: creates notebook link tokens"},
-    {"Ledger+Debt 04", "Link ledger+debt #4: creates notebook link tokens"},
-    {"Ticket+Pier 05", "Link ticket+pier #5: creates notebook link tokens"},
-    {"Thread+Coat 06", "Link thread+coat #6: creates notebook link tokens"},
-    {"Receipt+Alibi 07", "Link receipt+alibi #7: creates notebook link tokens"},
-    {"Photo+Time 08", "Link photo+time #8: creates notebook link tokens"},
-    {"Key+Door 09", "Link key+door #9: creates notebook link tokens"},
-    {"Ledger+Debt 10", "Link ledger+debt #10: creates notebook link tokens"},
-    {"Ticket+Pier 11", "Link ticket+pier #11: creates notebook link tokens"},
-    {"Thread+Coat 12", "Link thread+coat #12: creates notebook link tokens"},
-    {"Receipt+Alibi 13", "Link receipt+alibi #13: creates notebook link tokens"},
-    {"Photo+Time 14", "Link photo+time #14: creates notebook link tokens"},
-    {"Key+Door 15", "Link key+door #15: creates notebook link tokens"},
-    {"Ledger+Debt 16", "Link ledger+debt #16: creates notebook link tokens"},
-    {"Ticket+Pier 17", "Link ticket+pier #17: creates notebook link tokens"},
-    {"Thread+Coat 18", "Link thread+coat #18: creates notebook link tokens"},
+// INFORMANTS — pay cash for leads; no flag gate, but costly.
+static const CGC::NamedValue ROWS_INFORMANTS[] = {
+    {"Dock Contact",     "Waterfront source, knows cargo secrets."},
+    {"Press Stringer",   "Reporter trades tips for exclusives."},
+    {"Ex-cop Remy",      "Retired sergeant, still has friends."},
+    {"Neighborhood Kid", "Sees everything, asks for very little."},
+    {"City Hall Clerk",  "Paper trail in exchange for a favor."},
+    {"Pawn Broker Sal",  "Knows where stolen goods end up."},
 };
 
-static const CardputerGameCore::NamedValue POCKET_DETECTIVE_AGENCY_ROWS_6[] = {
-    {"Full Truth 01", "Close full truth #1: resolves accusation path"},
-    {"Partial 02", "Close partial #2: resolves accusation path"},
-    {"Wrong Lead 03", "Close wrong lead #3: resolves accusation path"},
-    {"Coverup 04", "Close coverup #4: resolves accusation path"},
-    {"Full Truth 05", "Close full truth #5: resolves accusation path"},
-    {"Partial 06", "Close partial #6: resolves accusation path"},
-    {"Wrong Lead 07", "Close wrong lead #7: resolves accusation path"},
-    {"Coverup 08", "Close coverup #8: resolves accusation path"},
-    {"Full Truth 09", "Close full truth #9: resolves accusation path"},
-    {"Partial 10", "Close partial #10: resolves accusation path"},
-    {"Wrong Lead 11", "Close wrong lead #11: resolves accusation path"},
-    {"Coverup 12", "Close coverup #12: resolves accusation path"},
+// ACCUSE — resolve a case; gated on F_LINKED (need at least one link found).
+static const CGC::NamedValue ROWS_ACCUSE[] = {
+    {"Full Disclosure",  "Present all evidence; let police decide."},
+    {"Confrontation",    "Face the suspect directly with the proof."},
+    {"Quiet Settlement", "Hand evidence to client; skip the press."},
+    {"Tip the Press",    "Give the story to the stringer instead."},
+    {"Partial Filing",   "File what you have; case stays open."},
+    {"Drop the Case",    "Walk away; protect yourself for now."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"AGENCY", "Open", POCKET_DETECTIVE_AGENCY_ROWS_0, 4, {2, -1, 1, 1, 1, 1, 0, 0}, 3, 0, 1UL},
-    {"CASE FILE", "Study", POCKET_DETECTIVE_AGENCY_ROWS_1, 12, {0, -1, 1, 0, 1, 1, 0, 0}, 2, 1, 2UL},
-    {"MAP", "Visit", POCKET_DETECTIVE_AGENCY_ROWS_2, 12, {-1, -2, 1, 1, 2, 1, 0, 0}, 4, 2, 4UL},
-    {"INTERVIEW", "Ask", POCKET_DETECTIVE_AGENCY_ROWS_3, 48, {-1, -2, 1, 2, 1, 2, 0, 0}, 4, 3, 8UL},
-    {"CLUE BOOK", "Read", POCKET_DETECTIVE_AGENCY_ROWS_4, 40, {0, 0, 1, 0, 1, 1, 0, 0}, 2, 4, 16UL},
-    {"COMPARE", "Link", POCKET_DETECTIVE_AGENCY_ROWS_5, 18, {0, -1, 2, -1, 2, 2, 0, 0}, 5, 5, 32UL},
-    {"ACCUSE", "Close", POCKET_DETECTIVE_AGENCY_ROWS_6, 12, {8, -4, 3, 4, 2, 1, 0, 0}, 7, 6, 64UL},
+// COURTROOM — meta-case endgame; gated on F_META_CLUE + F_ACCUSED + F_LINKED.
+// High reward but maximum risk. Unlocks the true-case ending.
+static const CGC::NamedValue ROWS_COURTROOM[] = {
+    {"Present Dossier",  "Hand the full corruption file to DA."},
+    {"Testify Directly", "Take the stand; no more hiding."},
+    {"Leak to Press",    "Blow it wide open; let city decide."},
+    {"Broker a Deal",    "Trade evidence for witness protection."},
+    {"Archive the File", "Lock it away safe; wait for better day."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Pressure 25", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Choice 26", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Discovery 27", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Trouble 28", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Favor 29", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Warning 30", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Breakthrough 31", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Setback 32", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Pressure 33", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Choice 34", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Discovery 35", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Trouble 36", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Favor 37", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Warning 38", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Breakthrough 39", "A bespoke Pocket Detective event changes saved state and story flags."},
-    {"Setback 40", "A bespoke Pocket Detective event changes saved state and story flags."},
+// ── Screens ───────────────────────────────────────────────────────────────────
+static const CGC::DeepScreenDef SCREENS[] = {
+    // AGENCY: open a case; sets F_CASE_OPEN; free but costs 1 Time.
+    {.title = "AGENCY", .verb = "Open", .rows = ROWS_AGENCY, .rowCount = 8,
+     .resourceDeltas = {0, -1, 0, 0, 0, 0, 1, 0}, .progressDelta = 1, .trackerIndex = 0,
+     .flagMask = F_CASE_OPEN, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Take a new case"},
+
+    // CANVASS: visit locations; costs 2 Time, gains 2 Clues; sets F_CANVASSED.
+    {.title = "CANVASS", .verb = "Visit", .rows = ROWS_CANVASS, .rowCount = 7,
+     .resourceDeltas = {0, -2, 2, 0, 1, 0, 1, 0}, .progressDelta = 2, .trackerIndex = 1,
+     .flagMask = F_CANVASSED, .costResource = R_TIME, .costAmount = 3, .requireFlags = F_CASE_OPEN,
+     .trackerDelta = 1, .objective = "Visit locations (-3 Time, +Clues)"},
+
+    // INTERVIEW: question suspects; costs 2 Time, gains Trust fuel; sets F_INTERVIEWED.
+    {.title = "INTERVIEW", .verb = "Ask", .rows = ROWS_INTERVIEW, .rowCount = 8,
+     .resourceDeltas = {0, -2, 1, 0, 1, 0, 2, 0}, .progressDelta = 2, .trackerIndex = 2,
+     .flagMask = F_INTERVIEWED, .costResource = R_TIME, .costAmount = 2, .requireFlags = F_CASE_OPEN,
+     .trackerDelta = 1, .objective = "Interview suspects (-2 Time)"},
+
+    // COMPARE: cross-examine clue pairs; gated on canvass + interview; costs 1 Lead.
+    {.title = "COMPARE", .verb = "Link", .rows = ROWS_COMPARE, .rowCount = 8,
+     .resourceDeltas = {0, -1, 0, -1, -1, 1, 1, 1}, .progressDelta = 3, .trackerIndex = 3,
+     .flagMask = F_LINKED, .costResource = R_LEADS, .costAmount = 1,
+     .requireFlags = F_CANVASSED | F_INTERVIEWED,
+     .trackerDelta = 1, .objective = "Compare clue pairs (-1 Lead)"},
+
+    // INFORMANTS: buy leads with cash; no flag gate.
+    {.title = "INFORMANTS", .verb = "Pay", .rows = ROWS_INFORMANTS, .rowCount = 6,
+     .resourceDeltas = {-10, -1, 0, 3, 0, 0, 0, 0}, .progressDelta = 1, .trackerIndex = 4,
+     .flagMask = 0, .costResource = R_CASH, .costAmount = 10, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Buy leads (-$10, +3 Leads)"},
+
+    // ACCUSE: resolve case; gated on at least one clue link found (F_LINKED).
+    {.title = "ACCUSE", .verb = "Close", .rows = ROWS_ACCUSE, .rowCount = 6,
+     .resourceDeltas = {12, -3, 0, 0, 2, 3, 2, 0}, .progressDelta = 6, .trackerIndex = 5,
+     .flagMask = F_ACCUSED, .costResource = -1, .costAmount = 0, .requireFlags = F_LINKED,
+     .trackerDelta = 1, .objective = "Make accusation (needs Links)"},
+
+    // COURTROOM: meta-case endgame; gated on meta-clue + accused + linked.
+    {.title = "COURTROOM", .verb = "Expose", .rows = ROWS_COURTROOM, .rowCount = 5,
+     .resourceDeltas = {0, -4, 0, 0, 5, 5, 0, 2}, .progressDelta = 10, .trackerIndex = 5,
+     .flagMask = F_EXPOSED, .costResource = -1, .costAmount = 0,
+     .requireFlags = F_META_CLUE | F_ACCUSED | F_LINKED,
+     .trackerDelta = 1, .objective = "Expose corruption (endgame)"},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Honest Agency", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Famous Sleuth", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Quiet Fixer", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Cold File", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Wrong Arrest", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"True Case", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ── Events ────────────────────────────────────────────────────────────────────
+// Reputation channels: 0=Police, 1=Underworld, 2=Press, 3=Neighborhood
+static const CGC::EventDef EVENTS[] = {
+    // ── Common filler (no flag gate) ─────────────────────────────────────────
+    {.name = "Quiet afternoon",
+     .note = "No leads; you reorganize your notes.",
+     .resourceDeltas = {0, 1, 0, 0, -1, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 4,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Street tip",
+     .note = "A stranger hands you a name. +1 Lead.",
+     .resourceDeltas = {0, 0, 0, 1, 0, 0, 1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 3, .repDelta = 1, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Dead end",
+     .note = "Trail goes cold; wasted half a day.",
+     .resourceDeltas = {0, -2, 0, 0, 1, 0, -1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Client check-in",
+     .note = "Client is patient. Rep holds steady.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 1, 2, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 3, .repDelta = 1, .weight = 3,
+     .requireFlags = F_CASE_OPEN, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // ── Canvass-gated beats ───────────────────────────────────────────────────
+    {.name = "Witness surfaces",
+     .note = "Bystander saw it all; adds a clue.",
+     .resourceDeltas = {0, 0, 2, 0, 0, 1, 1, 0}, .setFlags = 0, .trackerIndex = 1,
+     .trackerDelta = 1, .repIndex = 3, .repDelta = 2, .weight = 3,
+     .requireFlags = F_CANVASSED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Police lockdown",
+     .note = "Cops seal a location; Time lost.",
+     .resourceDeltas = {0, -3, 0, 0, 3, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 0, .repDelta = -1, .weight = 2,
+     .requireFlags = F_CANVASSED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Rival plants clue",
+     .note = "False evidence slips into your notes.",
+     .resourceDeltas = {0, -1, 0, 0, 2, -1, -1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 2, .repDelta = -1, .weight = 2,
+     .requireFlags = F_CANVASSED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // ── Interview-gated beats ─────────────────────────────────────────────────
+    {.name = "False alibi cracked",
+     .note = "Suspect's story doesn't hold. +1 Link.",
+     .resourceDeltas = {0, 0, 1, 0, 0, 1, 0, 1}, .setFlags = 0, .trackerIndex = 3,
+     .trackerDelta = 1, .repIndex = 0, .repDelta = 1, .weight = 3,
+     .requireFlags = F_INTERVIEWED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Suspect goes silent",
+     .note = "Lawyer called; interview ends early.",
+     .resourceDeltas = {0, -1, 0, 0, 2, 0, -2, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 0, .repDelta = -1, .weight = 2,
+     .requireFlags = F_INTERVIEWED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Bribe offered",
+     .note = "Suspect slides cash across the table.",
+     .resourceDeltas = {8, 0, 0, 0, 0, -2, -1, 0}, .setFlags = F_DIRTY_MONEY,
+     .trackerIndex = -1, .trackerDelta = 0, .repIndex = 1, .repDelta = 2, .weight = 1,
+     .requireFlags = F_INTERVIEWED, .forbidFlags = F_DIRTY_MONEY, .tone = CGC::TONE_BAD},
+
+    // ── Compare-gated beats ───────────────────────────────────────────────────
+    {.name = "Contradiction found",
+     .note = "Two clues clash; the truth emerges.",
+     .resourceDeltas = {0, 0, 0, 0, -1, 2, 1, 1}, .setFlags = 0, .trackerIndex = 3,
+     .trackerDelta = 1, .repIndex = 2, .repDelta = 1, .weight = 3,
+     .requireFlags = F_LINKED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Press leak",
+     .note = "Story hits the papers before you're ready.",
+     .resourceDeltas = {0, -1, 0, 0, 4, 2, -1, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 2, .repDelta = 3, .weight = 2,
+     .requireFlags = F_LINKED, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // ── Meta-corruption beat (unlocks the courtroom endgame flag) ─────────────
+    {.name = "City hall document",
+     .note = "A sealed memo links three old cases.",
+     .resourceDeltas = {0, -1, 1, 0, 2, 1, 0, 0}, .setFlags = F_META_CLUE,
+     .trackerIndex = -1, .trackerDelta = 0, .repIndex = 0, .repDelta = 1, .weight = 2,
+     .requireFlags = F_ACCUSED, .forbidFlags = F_META_CLUE, .tone = CGC::TONE_GOOD},
+
+    // ── Client-pressure event ─────────────────────────────────────────────────
+    {.name = "Client pressure",
+     .note = "Client demands result; wants truth buried.",
+     .resourceDeltas = {5, 0, 0, 0, 0, -1, -2, 0}, .setFlags = F_DIRTY_MONEY,
+     .trackerIndex = -1, .trackerDelta = 0, .repIndex = 1, .repDelta = 2, .weight = 1,
+     .requireFlags = F_CASE_OPEN, .forbidFlags = F_DIRTY_MONEY, .tone = CGC::TONE_BAD},
+
+    // ── Late-game breakthrough ────────────────────────────────────────────────
+    {.name = "Breakthrough moment",
+     .note = "Everything clicks; notebook fills fast.",
+     .resourceDeltas = {0, 0, 2, 1, -1, 1, 1, 1}, .setFlags = 0, .trackerIndex = 3,
+     .trackerDelta = 1, .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_LINKED, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // ── Underworld favor ──────────────────────────────────────────────────────
+    {.name = "Underworld favor",
+     .note = "A fixer clears your heat; costs nothing.",
+     .resourceDeltas = {0, 0, 0, 1, -4, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 1, .repDelta = 2, .weight = 1,
+     .requireFlags = F_DIRTY_MONEY, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Pocket Detective",
-    "pocket-detective-agency",
-    "Notebook mystery campaign",
-    "PDA2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    150,
-    0xFFFF,
-    0xFD20
+// ── Endings (most-specific first) ────────────────────────────────────────────
+// Reputation channels: 0=Police, 1=Underworld, 2=Press, 3=Neighborhood
+static const CGC::EndingDef ENDINGS[] = {
+    // 1. True Case: exposed corruption ring, no dirty money, high links.
+    {.name = "True Case",
+     .note = "The city hears the full story. Justice, at last.",
+     .cond = {.resourceIndex = R_LINKS, .resourceMin = 4, .resourceMax = 30,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_EXPOSED | F_META_CLUE, .forbidFlags = F_DIRTY_MONEY,
+              .requiresVictory = true}},
+
+    // 2. Honest Agency: clean run, good rep, no corruption.
+    {.name = "Honest Agency",
+     .note = "Your name stands for something real in this city.",
+     .cond = {.resourceIndex = R_REP, .resourceMin = 45, .resourceMax = 100,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_ACCUSED, .forbidFlags = F_DIRTY_MONEY,
+              .requiresVictory = true}},
+
+    // 3. Famous Sleuth: high rep + high press, dirty money allowed.
+    {.name = "Famous Sleuth",
+     .note = "Front page every week; the city loves you.",
+     .cond = {.resourceIndex = R_REP, .resourceMin = 55, .resourceMax = 100,
+              .trackerIndex = 2, .trackerMin = 5, .repIndex = 2, .repMin = 3,
+              .requireFlags = F_ACCUSED, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 4. Quiet Fixer: used dirty money, cases closed quietly.
+    {.name = "Quiet Fixer",
+     .note = "Solved it all, your way. No headlines.",
+     .cond = {.resourceIndex = R_CASH, .resourceMin = 30, .resourceMax = 999,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_ACCUSED | F_DIRTY_MONEY, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 5. Wrong Arrest: accused without enough links.
+    {.name = "Wrong Arrest",
+     .note = "Wrong person in cuffs. Case collapses.",
+     .cond = {.resourceIndex = R_LINKS, .resourceMin = 0, .resourceMax = 1,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = F_ACCUSED, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 6. Catch-all victory.
+    {.name = "Cold File",
+     .note = "A partial truth filed quietly in the archives.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 7. Catch-all loss (Time ran out).
+    {.name = "Out of Time",
+     .note = "Deadline passed. The case closes without you.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0, .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = false}},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ── Tracker labels ─────────────────────────────────────────────────────────
+static const char* const TRACKER_LABELS[] = {
+    "Cases", "Canvass", "Interviews", "Links", "Contacts", "Closed", nullptr, nullptr,
+};
+
+// ── Game definition ───────────────────────────────────────────────────────────
+static const CGC::DeepGameDefinition DEF = {
+    .title    = "Pocket Detective",
+    .slug     = "pocket-detective-agency",
+    .subtitle = "Notebook mystery campaign",
+    .saveMagic = "PDA2",
+    .resources     = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens       = SCREENS,
+    .screenCount   = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events        = EVENTS,
+    .eventCount    = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings       = ENDINGS,
+    .endingCount   = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 140,
+    .accentColor  = 0xFFFF,
+    .warningColor = 0xFD20,
+    .trackerLabels     = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective    = "Solve cases; expose city corruption.",
+    .primaryTracker = 5,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
