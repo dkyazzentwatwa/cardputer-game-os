@@ -1,206 +1,364 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Money", 60, 0, 999, 4, -3},
-    {"Feed", 40, 0, 120, -3, 6},
-    {"Meds", 5, 0, 99, -1, 1},
-    {"Rep", 10, 0, 99, 2, 0},
-    {"Bond", 20, 0, 100, 2, 3},
-    {"Fatigue", 0, 0, 100, 5, -8},
-    {"Tier", 1, 0, 9, 1, 0},
-    {"Weather", 0, 0, 9, 1, 1},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep in sync with RESOURCES order).
+enum {
+  R_MONEY,    // 0
+  R_FEED,     // 1 — sustain; negative primaryDelta → starvation ends the run
+  R_MEDS,     // 2
+  R_REP,      // 3
+  R_BOND,     // 4
+  R_FATIGUE,  // 5 — inverted: high is bad
+  R_WEEKS,    // 6 — counter (weeks survived)
+  R_HEALTH,   // 7
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_0[] = {
-    {"Spring 01", "Plan spring #1: updates ranch pressure"},
-    {"Rain 02", "Plan rain #2: updates ranch pressure"},
-    {"Heat 03", "Plan heat #3: updates ranch pressure"},
-    {"Fair 04", "Plan fair #4: updates ranch pressure"},
-    {"Storm 05", "Plan storm #5: updates ranch pressure"},
-    {"Quiet 06", "Plan quiet #6: updates ranch pressure"},
-    {"Spring 07", "Plan spring #7: updates ranch pressure"},
-    {"Rain 08", "Plan rain #8: updates ranch pressure"},
-    {"Heat 09", "Plan heat #9: updates ranch pressure"},
-    {"Fair 10", "Plan fair #10: updates ranch pressure"},
-    {"Storm 11", "Plan storm #11: updates ranch pressure"},
-    {"Quiet 12", "Plan quiet #12: updates ranch pressure"},
+// Story flags for gated progression.
+enum : uint32_t {
+  F_CLINIC_UP    = 1u << 0,  // clinic or stable built
+  F_YARD_UP      = 1u << 1,  // training yard built
+  F_NURSERY_UP   = 1u << 2,  // nursery built → enables breeding
+  F_PEN_UP       = 1u << 3,  // tournament pen built → enables tourneys
+  F_EXPEDITION   = 1u << 4,  // first successful expedition complete
+  F_RIVAL_MET    = 1u << 5,  // met the rival rancher
+  F_VARIANT_BORN = 1u << 6,  // a rare variant has been hatched
+  F_CHAMPION     = 1u << 7,  // won the frontier championship
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_1[] = {
-    {"Spriglet 01", "Care spriglet #1: tracks condition and bond"},
-    {"Cinderpup 02", "Care cinderpup #2: tracks condition and bond"},
-    {"Pebblor 03", "Care pebblor #3: tracks condition and bond"},
-    {"Mireling 04", "Care mireling #4: tracks condition and bond"},
-    {"Fusefox 05", "Care fusefox #5: tracks condition and bond"},
-    {"Quillox 06", "Care quillox #6: tracks condition and bond"},
-    {"Snowcalf 07", "Care snowcalf #7: tracks condition and bond"},
-    {"Moonmoth 08", "Care moonmoth #8: tracks condition and bond"},
-    {"Chrome Pup 09", "Care chrome pup #9: tracks condition and bond"},
-    {"Spriglet 10", "Care spriglet #10: tracks condition and bond"},
-    {"Cinderpup 11", "Care cinderpup #11: tracks condition and bond"},
-    {"Pebblor 12", "Care pebblor #12: tracks condition and bond"},
-    {"Mireling 13", "Care mireling #13: tracks condition and bond"},
-    {"Fusefox 14", "Care fusefox #14: tracks condition and bond"},
-    {"Quillox 15", "Care quillox #15: tracks condition and bond"},
-    {"Snowcalf 16", "Care snowcalf #16: tracks condition and bond"},
-    {"Moonmoth 17", "Care moonmoth #17: tracks condition and bond"},
-    {"Chrome Pup 18", "Care chrome pup #18: tracks condition and bond"},
+// ── Resources ────────────────────────────────────────────────────────────────
+static const CGC::ResourceDef RESOURCES[] = {
+    // label    start  min  max  prim safe  warn  bad  inv
+    {"Money",    80,    0,  999,  0,   0,   25,   8,  false},
+    {"Feed",     50,    0,  120, -2,   6,   20,   8,  false},  // starvation = loss
+    {"Meds",      6,    0,   30,  0,   0,    3,   1,  false},
+    {"Rep",       5,    0,   99,  0,   0,   -1,  -1,  false},
+    {"Bond",     20,    0,  100,  0,   1,   10,   4,  false},
+    {"Fatigue",   0,    0,  100,  1,  -4,   55,  78,  true},   // high fatigue = amber/red
+    {"Weeks",     0,    0,   99,  0,   0,   -1,  -1,  false},  // counter
+    {"Health",   80,    0,  100,  0,   2,   30,  12,  false},
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_2[] = {
-    {"Power 01", "Train power #1: adds stat growth and fatigue"},
-    {"Grit 02", "Train grit #2: adds stat growth and fatigue"},
-    {"Speed 03", "Train speed #3: adds stat growth and fatigue"},
-    {"Focus 04", "Train focus #4: adds stat growth and fatigue"},
-    {"Bond 05", "Train bond #5: adds stat growth and fatigue"},
-    {"Power 06", "Train power #6: adds stat growth and fatigue"},
-    {"Grit 07", "Train grit #7: adds stat growth and fatigue"},
-    {"Speed 08", "Train speed #8: adds stat growth and fatigue"},
-    {"Focus 09", "Train focus #9: adds stat growth and fatigue"},
-    {"Bond 10", "Train bond #10: adds stat growth and fatigue"},
+// ── Action rows ──────────────────────────────────────────────────────────────
+
+// RANCH: weekly review and rest
+static const CGC::NamedValue ROWS_RANCH[] = {
+    {"Morning Rounds",   "Walk the pens; check on every creature."},
+    {"Repair Fences",    "Patch broken rails before next storm."},
+    {"Stock Inventory",  "Count feed and meds; plan the week."},
+    {"Rest the Herd",    "Let everyone sleep in; fatigue drops."},
+    {"Weather Watch",    "Study the sky; adjust work schedule."},
+    {"Ranch Journal",    "Write up the week and note progress."},
+    {"Groom Spriglet",   "Brush and bond; low-effort care."},
+    {"Night Rounds",     "Late check; catch illness early."},
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_3[] = {
-    {"Pine 01", "Explore pine #1: risks weather for discoveries"},
-    {"Warm 02", "Explore warm #2: risks weather for discoveries"},
-    {"Mire 03", "Explore mire #3: risks weather for discoveries"},
-    {"Glass 04", "Explore glass #4: risks weather for discoveries"},
-    {"Fuse 05", "Explore fuse #5: risks weather for discoveries"},
-    {"Snow 06", "Explore snow #6: risks weather for discoveries"},
-    {"Moon 07", "Explore moon #7: risks weather for discoveries"},
-    {"Chrome 08", "Explore chrome #8: risks weather for discoveries"},
+// CARE: feeding, healing, bonding (costs Feed + Meds)
+static const CGC::NamedValue ROWS_CARE[] = {
+    {"Favorite Meal",    "Cook a species-preferred dish; big bond."},
+    {"Herb Poultice",    "Apply a meds poultice to sore muscles."},
+    {"Groom & Brush",    "Full grooming session builds deep trust."},
+    {"Hand-feed Snacks", "Personal feeding raises bond daily."},
+    {"Mineral Bath",     "Soak tired creatures; cuts fatigue hard."},
+    {"Vet Check",        "Use meds for a full health inspection."},
+    {"Play Session",     "Supervised play: bond up, fatigue down."},
+    {"Quarantine Check", "Isolate a sick creature before spread."},
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_4[] = {
-    {"Stable 01", "Build stable #1: improves ranch capability"},
-    {"Clinic 02", "Build clinic #2: improves ranch capability"},
-    {"Yard 03", "Build yard #3: improves ranch capability"},
-    {"Garden 04", "Build garden #4: improves ranch capability"},
-    {"Workshop 05", "Build workshop #5: improves ranch capability"},
-    {"Nursery 06", "Build nursery #6: improves ranch capability"},
-    {"Lookout 07", "Build lookout #7: improves ranch capability"},
-    {"Vane 08", "Build vane #8: improves ranch capability"},
-    {"Pen 09", "Build pen #9: improves ranch capability"},
-    {"Stable 10", "Build stable #10: improves ranch capability"},
-    {"Clinic 11", "Build clinic #11: improves ranch capability"},
-    {"Yard 12", "Build yard #12: improves ranch capability"},
-    {"Garden 13", "Build garden #13: improves ranch capability"},
-    {"Workshop 14", "Build workshop #14: improves ranch capability"},
-    {"Nursery 15", "Build nursery #15: improves ranch capability"},
-    {"Lookout 16", "Build lookout #16: improves ranch capability"},
-    {"Vane 17", "Build vane #17: improves ranch capability"},
-    {"Pen 18", "Build pen #18: improves ranch capability"},
-    {"Stable 19", "Build stable #19: improves ranch capability"},
-    {"Clinic 20", "Build clinic #20: improves ranch capability"},
-    {"Yard 21", "Build yard #21: improves ranch capability"},
-    {"Garden 22", "Build garden #22: improves ranch capability"},
-    {"Workshop 23", "Build workshop #23: improves ranch capability"},
-    {"Nursery 24", "Build nursery #24: improves ranch capability"},
-    {"Lookout 25", "Build lookout #25: improves ranch capability"},
-    {"Vane 26", "Build vane #26: improves ranch capability"},
-    {"Pen 27", "Build pen #27: improves ranch capability"},
+// TRAIN: raises stats but adds Fatigue (costs Feed)
+static const CGC::NamedValue ROWS_TRAIN[] = {
+    {"Power Drills",     "Weighted pulls build raw power."},
+    {"Grit Runs",        "Long-distance runs build endurance."},
+    {"Speed Sprints",    "Short bursts sharpen reaction time."},
+    {"Focus Puzzles",    "Concentration games improve tactics."},
+    {"Bond Sparring",    "Paired practice raises bond and stats."},
+    {"Agility Course",   "Obstacle run: speed and grit gains."},
+    {"Light Recovery",   "Gentle stretches; small gains, less cost."},
+    {"Combo Drill",      "Mixed session; broad gains, high cost."},
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_5[] = {
-    {"Novice 01", "Compete novice #1: converts stats to fame"},
-    {"Harvest 02", "Compete harvest #2: converts stats to fame"},
-    {"Storm 03", "Compete storm #3: converts stats to fame"},
-    {"Rival 04", "Compete rival #4: converts stats to fame"},
-    {"Frontier 05", "Compete frontier #5: converts stats to fame"},
-    {"Champion 06", "Compete champion #6: converts stats to fame"},
+// EXPEDITION: risks supplies, gains loot (gated behind F_EXPEDITION clearance)
+static const CGC::NamedValue ROWS_EXPED[] = {
+    {"Pine Hollow",      "Mild forest zone; common finds."},
+    {"Warm Flats",       "Open grassland; good for cinderpups."},
+    {"Mire Trail",       "Wet zone; mirelings thrive here."},
+    {"Glass Ridge",      "Rocky heights; quillox territory."},
+    {"Fuse Crater",      "Volcanic zone; rare fuse-type finds."},
+    {"Snow Peaks",       "Cold summit; snowcalf eggs hidden here."},
+    {"Moon Hollow",      "Night zone; moonmoth variants lurk."},
+    {"Chrome Wastes",    "Frontier danger; legendary loot waits."},
 };
 
-static const CardputerGameCore::NamedValue MONSTER_RANCH_TRAIL_ROWS_6[] = {
-    {"Refusal 01", "Handle refusal #1: creates ranch story flags"},
-    {"Storm 02", "Handle storm #2: creates ranch story flags"},
-    {"Rival 03", "Handle rival #3: creates ranch story flags"},
-    {"Cure 04", "Handle cure #4: creates ranch story flags"},
-    {"Injury 05", "Handle injury #5: creates ranch story flags"},
-    {"Bond 06", "Handle bond #6: creates ranch story flags"},
-    {"Egg 07", "Handle egg #7: creates ranch story flags"},
-    {"Filter 08", "Handle filter #8: creates ranch story flags"},
-    {"Refusal 09", "Handle refusal #9: creates ranch story flags"},
-    {"Storm 10", "Handle storm #10: creates ranch story flags"},
-    {"Rival 11", "Handle rival #11: creates ranch story flags"},
-    {"Cure 12", "Handle cure #12: creates ranch story flags"},
-    {"Injury 13", "Handle injury #13: creates ranch story flags"},
-    {"Bond 14", "Handle bond #14: creates ranch story flags"},
-    {"Egg 15", "Handle egg #15: creates ranch story flags"},
-    {"Filter 16", "Handle filter #16: creates ranch story flags"},
-    {"Refusal 17", "Handle refusal #17: creates ranch story flags"},
-    {"Storm 18", "Handle storm #18: creates ranch story flags"},
-    {"Rival 19", "Handle rival #19: creates ranch story flags"},
-    {"Cure 20", "Handle cure #20: creates ranch story flags"},
-    {"Injury 21", "Handle injury #21: creates ranch story flags"},
-    {"Bond 22", "Handle bond #22: creates ranch story flags"},
-    {"Egg 23", "Handle egg #23: creates ranch story flags"},
-    {"Filter 24", "Handle filter #24: creates ranch story flags"},
+// FACILITIES: build/upgrade (costs Money; sets progression flags)
+static const CGC::NamedValue ROWS_BUILD[] = {
+    {"Stable Upgrade",   "More stalls; house a bigger herd."},
+    {"Clinic Build",     "Basic vet station; meds stretch further."},
+    {"Training Yard",    "Proper yard; training gains improve."},
+    {"Garden Plot",      "Grow feed locally; lower feed cost."},
+    {"Workshop",         "Craft tools; cuts expedition supply use."},
+    {"Nursery",          "Egg incubator; enables breeding."},
+    {"Lookout Tower",    "Spot weather early; reduce storm hits."},
+    {"Weather Vane",     "Fine-tune weather reads; fewer surprises."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"RANCH", "Plan", MONSTER_RANCH_TRAIL_ROWS_0, 12, {2, -2, 0, 1, 2, 1, 0, 1}, 3, 0, 1UL},
-    {"CREATURE", "Care", MONSTER_RANCH_TRAIL_ROWS_1, 18, {-1, -2, -1, 1, 4, -3, 0, 0}, 3, 1, 2UL},
-    {"TRAIN", "Train", MONSTER_RANCH_TRAIL_ROWS_2, 10, {0, -2, 0, 1, 2, 6, 0, 0}, 5, 2, 4UL},
-    {"EXPED", "Explore", MONSTER_RANCH_TRAIL_ROWS_3, 8, {4, -4, -1, 2, 2, 4, 1, 1}, 5, 3, 8UL},
-    {"BUILD", "Upgrade", MONSTER_RANCH_TRAIL_ROWS_4, 27, {-8, 2, 1, 1, 2, -2, 1, 0}, 5, 4, 16UL},
-    {"TOURNEY", "Enter", MONSTER_RANCH_TRAIL_ROWS_5, 6, {12, -3, -1, 4, 2, 7, 1, 0}, 7, 5, 32UL},
-    {"EVENT", "Choose", MONSTER_RANCH_TRAIL_ROWS_6, 24, {-2, -2, -1, 2, 3, 3, 0, 1}, 4, 6, 64UL},
+// BREED: hatch eggs and discover variants (gated: F_NURSERY_UP)
+static const CGC::NamedValue ROWS_BREED[] = {
+    {"Incubate Egg",     "Warm a mystery egg in the nursery."},
+    {"Pair Cinderpups",  "Bond two pups; rare fusefox chance."},
+    {"Pair Mirelings",   "Swamp pair; mudcrawler variant chance."},
+    {"Pair Snowcalves",  "Cold-season pair; frost variant chance."},
+    {"Moonmoth Ritual",  "Moonlit pairing; shimmer variant chance."},
+    {"Variant Study",    "Observe variant traits; rep bonus."},
+    {"Egg Trade",        "Trade a common egg for a rare one."},
+    {"Release Surplus",  "Release extras; bond and rep up."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Monster Ranch event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Monster Ranch event changes saved state and story flags."},
+// TOURNAMENT: big progress + reward (gated: F_PEN_UP)
+static const CGC::NamedValue ROWS_TOURNEY[] = {
+    {"Novice Cup",       "Entry-level bracket; easy prize."},
+    {"Harvest Festival", "Seasonal tourney; reputation prize."},
+    {"Storm League",     "Weather-tested brackets; meds prize."},
+    {"Rival Challenge",  "Rival rancher's formal rematch."},
+    {"Frontier Open",    "Hard bracket; frontier rep at stake."},
+    {"Champion's Cup",   "Top-tier; only the best ranches win."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"League Winner", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Cozy Ranch", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Variant Archive", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Rival Friend", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Research Star", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Empty Barn", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ── Screens ──────────────────────────────────────────────────────────────────
+static const CGC::DeepScreenDef SCREENS[] = {
+    // RANCH: weekly overview and rest. Sets no gate flag; always open.
+    {.title = "RANCH", .verb = "Review", .rows = ROWS_RANCH, .rowCount = 8,
+     .resourceDeltas = {0, -1, 0, 0, 1, -4, 1, 2}, .progressDelta = 1, .trackerIndex = 0,
+     .flagMask = 0, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Plan the week; rest reduces fatigue"},
+
+    // CARE: heals and bonds. Costs Feed + small Meds.
+    {.title = "CARE", .verb = "Tend", .rows = ROWS_CARE, .rowCount = 8,
+     .resourceDeltas = {0, -3, -1, 0, 4, -5, 0, 3}, .progressDelta = 1, .trackerIndex = 1,
+     .flagMask = F_CLINIC_UP, .costResource = R_FEED, .costAmount = 4, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Care for herd (-4 Feed, -1 Meds)"},
+
+    // TRAIN: raises stats but spikes Fatigue. Costs Feed.
+    {.title = "TRAIN", .verb = "Train", .rows = ROWS_TRAIN, .rowCount = 8,
+     .resourceDeltas = {0, -4, 0, 1, 2, 8, 0, 0}, .progressDelta = 3, .trackerIndex = 2,
+     .flagMask = F_YARD_UP, .costResource = R_FEED, .costAmount = 5, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Train hard (-5 Feed, +8 Fatigue!)"},
+
+    // EXPEDITION: costs Money + Feed; sets F_EXPEDITION on first use.
+    {.title = "EXPED", .verb = "Explore", .rows = ROWS_EXPED, .rowCount = 8,
+     .resourceDeltas = {-6, -5, 0, 2, 1, 5, 0, -2}, .progressDelta = 4, .trackerIndex = 3,
+     .flagMask = F_EXPEDITION, .costResource = R_MONEY, .costAmount = 10, .requireFlags = 0,
+     .trackerDelta = 1, .objective = "Explore zones (-10 Money, -5 Feed)"},
+
+    // FACILITIES: build and upgrade. Costs Money; sets clinic/yard/nursery/pen flags.
+    {.title = "BUILD", .verb = "Build", .rows = ROWS_BUILD, .rowCount = 8,
+     .resourceDeltas = {-18, 0, 0, 1, 0, 0, 0, 1}, .progressDelta = 3, .trackerIndex = 4,
+     .flagMask = F_NURSERY_UP | F_PEN_UP, .costResource = R_MONEY, .costAmount = 18,
+     .requireFlags = 0, .trackerDelta = 1, .objective = "Build facilities (-18 Money)"},
+
+    // BREED: egg hatching, variants. Gated behind F_NURSERY_UP.
+    {.title = "BREED", .verb = "Hatch", .rows = ROWS_BREED, .rowCount = 8,
+     .resourceDeltas = {-5, -3, 0, 2, 3, 0, 0, 0}, .progressDelta = 3, .trackerIndex = 5,
+     .flagMask = F_VARIANT_BORN, .costResource = R_MONEY, .costAmount = 5,
+     .requireFlags = F_NURSERY_UP, .trackerDelta = 1,
+     .objective = "Breed variants (need Nursery)"},
+
+    // TOURNAMENT: big progress reward. Gated behind F_PEN_UP. Costs Meds.
+    {.title = "TOURNEY", .verb = "Enter", .rows = ROWS_TOURNEY, .rowCount = 6,
+     .resourceDeltas = {15, -2, -2, 5, 0, 6, 0, -3}, .progressDelta = 8, .trackerIndex = 6,
+     .flagMask = F_CHAMPION, .costResource = R_MEDS, .costAmount = 2,
+     .requireFlags = F_PEN_UP, .trackerDelta = 1,
+     .objective = "Enter a cup (need Pen, -2 Meds)"},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Monster Ranch",
-    "monster-ranch-trail",
-    "Weekly creature ranch",
-    "MRAN2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    170,
-    0x07E0,
-    0xFD20
+// ── Events ───────────────────────────────────────────────────────────────────
+static const CGC::EventDef EVENTS[] = {
+    // Common neutral fillers ─────────────────────────────────────────────────
+    {.name = "Quiet week", .note = "Ranch hums along; herd content.",
+     .resourceDeltas = {0, 0, 0, 0, 1, -2, 0, 1}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 5, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Good harvest", .note = "Garden yields extra; feed stocks up.",
+     .resourceDeltas = {0, 8, 0, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Mild weather", .note = "Clear skies keep fatigue low.",
+     .resourceDeltas = {0, 0, 0, 0, 0, -3, 0, 1}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Stiff joints", .note = "Herd sore after hard week; rest needed.",
+     .resourceDeltas = {0, 0, -1, 0, 0, 5, 0, -3}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Feed spoiled", .note = "Damp feed barrel — toss and reorder.",
+     .resourceDeltas = {-8, -10, 0, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // Creature illness ────────────────────────────────────────────────────────
+    {.name = "Creature ill", .note = "Spriglet coughs; treat fast or it spreads.",
+     .resourceDeltas = {0, 0, -2, 0, -2, 2, 0, -6}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Clinic saves herd", .note = "Clinic catches outbreak before it spreads.",
+     .resourceDeltas = {0, 0, -1, 0, 1, 0, 0, 2}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 0, .repDelta = 1, .weight = 2,
+     .requireFlags = F_CLINIC_UP, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // Weather events ──────────────────────────────────────────────────────────
+    {.name = "Frontier storm", .note = "Heavy storm; facilities take minor damage.",
+     .resourceDeltas = {-5, 0, 0, 0, 0, 3, 0, -4}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Vane warns in time", .note = "Lookout tip lets you shelter early.",
+     .resourceDeltas = {0, 0, 0, 0, 0, -1, 0, 1}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_CLINIC_UP, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // Expedition finds ────────────────────────────────────────────────────────
+    {.name = "Rare egg found", .note = "Expedition returns with a mystery egg.",
+     .resourceDeltas = {0, 0, 0, 2, 2, 0, 0, 0}, .setFlags = 0, .trackerIndex = 5,
+     .trackerDelta = 1, .repIndex = 1, .repDelta = 2, .weight = 2,
+     .requireFlags = F_EXPEDITION, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Supply cache", .note = "Hidden cache fills meds and money.",
+     .resourceDeltas = {12, 0, 3, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 1,
+     .requireFlags = F_EXPEDITION, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Zone injury", .note = "Creature hurt in rough terrain; health dips.",
+     .resourceDeltas = {0, 0, -2, 0, 0, 4, 0, -8}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_EXPEDITION, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // Rival rancher ───────────────────────────────────────────────────────────
+    {.name = "Rival Daska stops by", .note = "Rival sizes up your herd; rep on the line.",
+     .resourceDeltas = {0, 0, 0, 1, 0, 0, 0, 0}, .setFlags = F_RIVAL_MET, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 2, .repDelta = -1, .weight = 2, .requireFlags = 0,
+     .forbidFlags = F_RIVAL_MET, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Rival trade offer", .note = "Daska wants a rare egg for med supplies.",
+     .resourceDeltas = {0, 0, 4, 1, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = 2, .repDelta = 1, .weight = 2,
+     .requireFlags = F_RIVAL_MET, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // Breakthrough / variant ──────────────────────────────────────────────────
+    {.name = "Variant hatches!", .note = "A shimmering variant emerges from the nest.",
+     .resourceDeltas = {0, 0, 0, 4, 4, 0, 0, 0}, .setFlags = F_VARIANT_BORN,
+     .trackerIndex = 5, .trackerDelta = 1, .repIndex = 1, .repDelta = 3, .weight = 1,
+     .requireFlags = F_NURSERY_UP, .forbidFlags = F_VARIANT_BORN, .tone = CGC::TONE_GOOD},
+
+    {.name = "Training break!", .note = "Cinderpup finally masters the agility course.",
+     .resourceDeltas = {0, 0, 0, 2, 2, -2, 0, 2}, .setFlags = 0, .trackerIndex = 2,
+     .trackerDelta = 1, .repIndex = 0, .repDelta = 2, .weight = 2,
+     .requireFlags = F_YARD_UP, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // Fatigue injury ──────────────────────────────────────────────────────────
+    {.name = "Overtraining injury", .note = "Pushed too hard; creature pulls a tendon.",
+     .resourceDeltas = {0, 0, -3, 0, -2, 5, 0, -10}, .setFlags = 0, .trackerIndex = -1,
+     .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2, .requireFlags = 0,
+     .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // Tournament drama ────────────────────────────────────────────────────────
+    {.name = "Traveling judge", .note = "Judge offers a pop-up tourney slot today.",
+     .resourceDeltas = {8, 0, 0, 3, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = 6,
+     .trackerDelta = 1, .repIndex = 0, .repDelta = 2, .weight = 1,
+     .requireFlags = F_PEN_UP, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ── Endings ───────────────────────────────────────────────────────────────────
+// Most-specific first; first match wins.
+static const CGC::EndingDef ENDINGS[] = {
+    // League winner: won Champion's Cup + high rep
+    {.name = "League Winner",
+     .note = "Trophies line every wall. The frontier knows your name.",
+     .cond = {.resourceIndex = R_REP, .resourceMin = 25, .resourceMax = 99,
+              .trackerIndex = 6, .trackerMin = 3,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CHAMPION, .forbidFlags = 0, .requiresVictory = true}},
+
+    // Variant archive: nursery + 3+ variants hatched
+    {.name = "Variant Archive",
+     .note = "Your nursery ledger rivals any research lab.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = 5, .trackerMin = 3,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_NURSERY_UP | F_VARIANT_BORN, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Rival friend: met rival, did tourney, high bond
+    {.name = "Rival Friend",
+     .note = "Daska calls it even; you run joint expeditions.",
+     .cond = {.resourceIndex = R_BOND, .resourceMin = 55, .resourceMax = 100,
+              .trackerIndex = 6, .trackerMin = 2,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_RIVAL_MET, .forbidFlags = 0, .requiresVictory = true}},
+
+    // Research star: many expeditions + high rep
+    {.name = "Research Star",
+     .note = "Every zone catalogued; universities ask for data.",
+     .cond = {.resourceIndex = R_REP, .resourceMin = 18, .resourceMax = 99,
+              .trackerIndex = 3, .trackerMin = 5,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_EXPEDITION, .forbidFlags = 0, .requiresVictory = true}},
+
+    // Cozy ranch: catch-all victory
+    {.name = "Cozy Ranch",
+     .note = "Quiet, happy, and well-fed. A good life in the frontier.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = true}},
+
+    // Empty barn: loss
+    {.name = "Empty Barn",
+     .note = "The herd collapsed. The barn stands empty and quiet.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0, .requiresVictory = false}},
+};
+
+// ── Tracker labels ────────────────────────────────────────────────────────────
+static const char* const TRACKER_LABELS[] = {
+    "Weeks",       // 0 — primaryTracker
+    "Care",        // 1
+    "Training",    // 2
+    "Expeditions", // 3
+    "Facilities",  // 4
+    "Variants",    // 5
+    "Tourneys",    // 6
+    nullptr,       // 7
+};
+
+// ── Game definition ───────────────────────────────────────────────────────────
+static const CGC::DeepGameDefinition DEF = {
+    .title       = "Monster Ranch",
+    .slug        = "monster-ranch-trail",
+    .subtitle    = "Weekly creature ranch",
+    .saveMagic   = "MRAN2",
+    .resources   = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens     = SCREENS,
+    .screenCount = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events      = EVENTS,
+    .eventCount  = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings     = ENDINGS,
+    .endingCount = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 170,
+    .accentColor    = 0x07E0,
+    .warningColor   = 0xFD20,
+    .trackerLabels     = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective   = "Keep herd fed; win the frontier league.",
+    .primaryTracker = 0,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
