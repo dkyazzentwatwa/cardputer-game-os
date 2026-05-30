@@ -1,171 +1,419 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Cr", 90, 0, 999, 4, -2},
-    {"Fuel", 50, 0, 120, -4, 8},
-    {"O2", 60, 0, 120, -3, 7},
-    {"Hull", 88, 0, 100, -2, 6},
-    {"Heat", 0, 0, 100, 3, -4},
-    {"Cargo", 0, 0, 80, 2, -1},
-    {"Mor", 70, 0, 100, -1, 4},
-    {"Debt", 30, 0, 999, -3, 0},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep in sync with RESOURCES order).
+enum {
+  R_CR,    // Credits: currency
+  R_FUEL,  // Fuel: survival; negative primaryDelta = loss trigger
+  R_O2,    // Oxygen: survival buffer on long legs
+  R_HULL,  // Hull: ship condition
+  R_HEAT,  // Heat: patrol attention (inverted: high is bad)
+  R_CARGO, // Cargo pressure
+  R_MOR,   // Crew morale
+  R_DEBT   // Debt (inverted: high is bad)
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_0[] = {
-    {"Rumor 01", "Review rumor #1: sets the next route pressure"},
-    {"Debt 02", "Review debt #2: sets the next route pressure"},
-    {"Crew 03", "Review crew #3: sets the next route pressure"},
-    {"Artifact 04", "Review artifact #4: sets the next route pressure"},
-    {"Patrol 05", "Review patrol #5: sets the next route pressure"},
-    {"Fuel 06", "Review fuel #6: sets the next route pressure"},
-    {"Dock 07", "Review dock #7: sets the next route pressure"},
-    {"Distress 08", "Review distress #8: sets the next route pressure"},
+// Story flags. Screens set these when first visited; events advance the arc.
+enum : uint32_t {
+  F_BRIDGE_BRIEFED  = 1u << 0,  // captain reviewed ship status
+  F_FIRST_TRADE     = 1u << 1,  // at least one trade completed
+  F_ROUTE_FLOWN     = 1u << 2,  // at least one route leg flown
+  F_CREW_HIRED      = 1u << 3,  // at least one crew member signed
+  F_UPGRADED        = 1u << 4,  // at least one ship upgrade installed
+  F_RELIC_FOUND     = 1u << 5,  // alien relic fragment recovered
+  F_DEBT_RESOLVED   = 1u << 6,  // debt paid down to safe level
+  F_FACTION_PACT    = 1u << 7,  // faction allegiance struck
+  F_RELIC_AWAKENED  = 1u << 8,  // relic fully decoded and live
+  F_PIRATE_DEAL     = 1u << 9,  // smuggler compact agreed to
+  F_CORP_PAWN       = 1u << 10, // sold route data to megacorp
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_1[] = {
-    {"Spice 01", "Trade spice #1: changes cargo, credits, and local heat"},
-    {"Water 02", "Trade water #2: changes cargo, credits, and local heat"},
-    {"Medgel 03", "Trade medgel #3: changes cargo, credits, and local heat"},
-    {"Relics 04", "Trade relics #4: changes cargo, credits, and local heat"},
-    {"Scrap 05", "Trade scrap #5: changes cargo, credits, and local heat"},
-    {"Kelp 06", "Trade kelp #6: changes cargo, credits, and local heat"},
-    {"Cores 07", "Trade cores #7: changes cargo, credits, and local heat"},
-    {"Textiles 08", "Trade textiles #8: changes cargo, credits, and local heat"},
+static const CGC::ResourceDef RESOURCES[] = {
+    // label  start  min   max  prim safe  warn  bad   inverted
+    {"Cr",    120,   0,   999,   0,   0,   40,   15,  false},  // credits: low warn
+    {"Fuel",   60,   0,   120,  -1,   8,   25,   10,  false},  // depletion = loss
+    {"O2",     70,   0,   120,   0,   6,   20,    8,  false},  // buffer; runs out on long legs
+    {"Hull",   85,   0,   100,   0,   4,   30,   12,  false},  // ship condition
+    {"Heat",    5,   0,   100,   1,  -4,   55,   80,  true},   // patrol attention: high is bad
+    {"Cargo",   0,   0,    80,   0,   0,   -1,   -1,  false},  // cargo pressure (counter)
+    {"Mor",    70,   0,   100,   0,   2,   30,   12,  false},  // crew morale
+    {"Debt",   35,   0,   999,   0,   0,   60,   90,  true},   // debt: high is bad
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_2[] = {
-    {"Moth 01", "Fly moth #1: spends fuel and rolls a route event"},
-    {"Tin 02", "Fly tin #2: spends fuel and rolls a route event"},
-    {"Glass 03", "Fly glass #3: spends fuel and rolls a route event"},
-    {"Drift 04", "Fly drift #4: spends fuel and rolls a route event"},
-    {"Rust 05", "Fly rust #5: spends fuel and rolls a route event"},
-    {"Blue 06", "Fly blue #6: spends fuel and rolls a route event"},
-    {"Kelp 07", "Fly kelp #7: spends fuel and rolls a route event"},
-    {"Crown 08", "Fly crown #8: spends fuel and rolls a route event"},
-    {"Null 09", "Fly null #9: spends fuel and rolls a route event"},
-    {"Gate 10", "Fly gate #10: spends fuel and rolls a route event"},
-    {"Halo 11", "Fly halo #11: spends fuel and rolls a route event"},
-    {"Moth 12", "Fly moth #12: spends fuel and rolls a route event"},
-    {"Tin 13", "Fly tin #13: spends fuel and rolls a route event"},
-    {"Glass 14", "Fly glass #14: spends fuel and rolls a route event"},
-    {"Drift 15", "Fly drift #15: spends fuel and rolls a route event"},
-    {"Rust 16", "Fly rust #16: spends fuel and rolls a route event"},
-    {"Blue 17", "Fly blue #17: spends fuel and rolls a route event"},
-    {"Kelp 18", "Fly kelp #18: spends fuel and rolls a route event"},
-    {"Crown 19", "Fly crown #19: spends fuel and rolls a route event"},
-    {"Null 20", "Fly null #20: spends fuel and rolls a route event"},
-    {"Gate 21", "Fly gate #21: spends fuel and rolls a route event"},
-    {"Halo 22", "Fly halo #22: spends fuel and rolls a route event"},
+// ---- BRIDGE rows ----
+static const CGC::NamedValue ROWS_BRIDGE[] = {
+    {"Ship Status",     "Check fuel, O2, hull — plan next leg."},
+    {"Debt Ledger",     "Review loans; pressure noted in log."},
+    {"Patrol Report",   "Read sector patrols; trim heat risk."},
+    {"Distress Ping",   "Relay asks for aid; track it down."},
+    {"Artifact Lead",   "Coordinate fragment parsed from log."},
+    {"Dock Forecast",   "Next port fees and market outlook."},
+    {"Crew Briefing",   "Morale notes; prep crew for next jump."},
+    {"Fuel Estimate",   "Plot reserve vs. route cost; adjust."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_3[] = {
-    {"Spice 01", "Sort spice #1: prevents over-capacity and flags contraband"},
-    {"Water 02", "Sort water #2: prevents over-capacity and flags contraband"},
-    {"Medgel 03", "Sort medgel #3: prevents over-capacity and flags contraband"},
-    {"Relics 04", "Sort relics #4: prevents over-capacity and flags contraband"},
-    {"Scrap 05", "Sort scrap #5: prevents over-capacity and flags contraband"},
-    {"Kelp 06", "Sort kelp #6: prevents over-capacity and flags contraband"},
-    {"Cores 07", "Sort cores #7: prevents over-capacity and flags contraband"},
-    {"Textiles 08", "Sort textiles #8: prevents over-capacity and flags contraband"},
+// ---- MARKET rows ----
+static const CGC::NamedValue ROWS_MARKET[] = {
+    {"Spice",     "High-value; watch heat on restricted."},
+    {"Water",     "Cheap bulk good; safe but thin margin."},
+    {"Medgel",    "Medical stock; sells well at Outposts."},
+    {"Relics",    "Ancient tech; risky but lucrative."},
+    {"Scrap",     "Heavy; cheap filler for lean legs."},
+    {"Kelp-Paste","Station staple; steady low profit."},
+    {"Data Cores","Faction freight; heat if uninspected."},
+    {"Textiles",  "Legal, light; safe margin in Core."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_4[] = {
-    {"Pilot 01", "Hire pilot #1: adds a compact crew modifier"},
-    {"Broker 02", "Hire broker #2: adds a compact crew modifier"},
-    {"Medic 03", "Hire medic #3: adds a compact crew modifier"},
-    {"Mechanic 04", "Hire mechanic #4: adds a compact crew modifier"},
-    {"Scout 05", "Hire scout #5: adds a compact crew modifier"},
-    {"Cook 06", "Hire cook #6: adds a compact crew modifier"},
-    {"Shield 07", "Hire shield #7: adds a compact crew modifier"},
-    {"Archivist 08", "Hire archivist #8: adds a compact crew modifier"},
-    {"Navigator 09", "Hire navigator #9: adds a compact crew modifier"},
-    {"Fixer 10", "Hire fixer #10: adds a compact crew modifier"},
-    {"Courier 11", "Hire courier #11: adds a compact crew modifier"},
-    {"Guard 12", "Hire guard #12: adds a compact crew modifier"},
+// ---- ROUTE rows ----
+static const CGC::NamedValue ROWS_ROUTE[] = {
+    {"Moth Crossing",  "Short hop; low hazard, low patrol."},
+    {"Tin Belt",       "Asteroid fringe; saves fuel, risky."},
+    {"Glass Corridor", "Clear lane; fast but heavily scanned."},
+    {"Drift Run",      "Fuel-free coast leg; long travel time."},
+    {"Rust Expanse",   "Salvage-rich; hull stress zone."},
+    {"Blue Approach",  "Faction space; heat if no permit."},
+    {"Null Passage",   "Dead zone; no help if engines fail."},
+    {"Gate Transit",   "Jump-gate; fast, costs port tax."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_5[] = {
-    {"Cargo Bay 01", "Install cargo bay #1: improves long route survival"},
-    {"Fuel Tank 02", "Install fuel tank #2: improves long route survival"},
-    {"O2 Recycler 03", "Install o2 recycler #3: improves long route survival"},
-    {"Shield 04", "Install shield #4: improves long route survival"},
-    {"Scanner 05", "Install scanner #5: improves long route survival"},
-    {"Hold 06", "Install hold #6: improves long route survival"},
-    {"Engine 07", "Install engine #7: improves long route survival"},
-    {"Med Bay 08", "Install med bay #8: improves long route survival"},
+// ---- CARGO rows ----
+static const CGC::NamedValue ROWS_CARGO[] = {
+    {"Purge Scrap",     "Dump low-value mass; free capacity."},
+    {"Repack Hold",     "Redistribute load; lower heat risk."},
+    {"Inspect Goods",   "Check for contraband before customs."},
+    {"Seal Smuggler Bay","Lock restricted items behind panel."},
+    {"Log Manifest",    "File accurate manifest; heat drops."},
+    {"Jettison Mass",   "Emergency dump; gain O2 headroom."},
+    {"Sort Priority",   "Front-load relic cargo for delivery."},
+    {"Cache Fuel Cell", "Stash a reserve cell in cargo bay."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRADER_POCKET_FRONTIER_ROWS_6[] = {
-    {"Artifact 01", "Study artifact #1: advances ending pressure"},
-    {"Courier 02", "Study courier #2: advances ending pressure"},
-    {"Faction 03", "Study faction #3: advances ending pressure"},
-    {"Debt 04", "Study debt #4: advances ending pressure"},
-    {"Crew 05", "Study crew #5: advances ending pressure"},
-    {"Relic 06", "Study relic #6: advances ending pressure"},
-    {"Patrol 07", "Study patrol #7: advances ending pressure"},
-    {"Salvage 08", "Study salvage #8: advances ending pressure"},
-    {"Gate 09", "Study gate #9: advances ending pressure"},
-    {"Rumor 10", "Study rumor #10: advances ending pressure"},
+// ---- CREW rows ----
+static const CGC::NamedValue ROWS_CREW[] = {
+    {"Kav — Pilot",      "Fuel-efficient burns; reduces fuel use."},
+    {"Rin — Broker",     "Market intel; better trade margins."},
+    {"Doc Peel — Medic", "Keeps morale up; patches hull cuts."},
+    {"Torq — Mechanic",  "Hull repair in flight; patch leaks."},
+    {"Zess — Scout",     "Spots patrol lanes; lowers heat gain."},
+    {"Poma — Cook",      "Crew fed well; strong morale buffer."},
+    {"Shid — Shield Tech","Deflects pirate shots; hull shield."},
+    {"Vera — Archivist", "Decodes relic data; gate to ending."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"BRIDGE", "Command", STAR_TRADER_POCKET_FRONTIER_ROWS_0, 8, {1, -1, -1, 0, 1, 0, 1, -1}, 3, 0, 1UL},
-    {"MARKET", "Trade", STAR_TRADER_POCKET_FRONTIER_ROWS_1, 8, {5, 0, 0, 0, 1, 2, 0, -1}, 4, 1, 2UL},
-    {"ROUTES", "Jump", STAR_TRADER_POCKET_FRONTIER_ROWS_2, 22, {3, -5, -4, -2, 2, 0, -1, -1}, 6, 2, 4UL},
-    {"CARGO", "Manage", STAR_TRADER_POCKET_FRONTIER_ROWS_3, 8, {2, 0, 0, 0, -1, -2, 1, 0}, 2, 3, 8UL},
-    {"CREW", "Hire", STAR_TRADER_POCKET_FRONTIER_ROWS_4, 12, {-8, 0, 1, 1, -1, 0, 2, 0}, 4, 4, 16UL},
-    {"SHIP", "Upgrade", STAR_TRADER_POCKET_FRONTIER_ROWS_5, 8, {-12, 4, 4, 4, -1, 4, 1, -1}, 5, 5, 32UL},
-    {"LOG", "Trace", STAR_TRADER_POCKET_FRONTIER_ROWS_6, 10, {1, 0, 0, 0, -1, 0, 1, -2}, 3, 6, 64UL},
+// ---- SHIP UPGRADES rows ----
+static const CGC::NamedValue ROWS_SHIP[] = {
+    {"Cargo Bay+",    "Expands hold; carry more per leg."},
+    {"Fuel Tank+",    "Extra tank; longer range, less risk."},
+    {"O2 Recycler",   "Cuts O2 burn; safer on long legs."},
+    {"Shield Plates", "Reduces hull damage from events."},
+    {"Deep Scanner",  "Spots salvage and relic fragments."},
+    {"Smuggler Hold", "Hides restricted cargo from customs."},
+    {"Engine Tune",   "Faster burns; Fuel saves per route."},
+    {"Med Bay",       "Crew heals mid-flight; morale boost."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Star Trader event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Star Trader event changes saved state and story flags."},
+// ---- LOG / RELIC rows (gated) ----
+static const CGC::NamedValue ROWS_LOG[] = {
+    {"Relic Fragment A", "Decode first coordinate shard."},
+    {"Relic Fragment B", "Cross-reference second ping data."},
+    {"Gate Archive",     "Pull jump-gate logs for clue."},
+    {"Faction Dossier",  "Faction favors toward allegiance."},
+    {"Courier Thread",   "Delivery contract; credits+route."},
+    {"Debt Notice",      "Formal demand; negotiate rate."},
+    {"Patrol Pattern",   "Map patrols; plan low-heat leg."},
+    {"Salvage Report",   "Known salvage zones on route map."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Legend Run", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Hard Truth", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Quiet Win", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Faction Path", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Costly Deal", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Run Failed", "Ending path 6: resources, flags, and reputation decide this outcome."},
+static const CGC::DeepScreenDef SCREENS[] = {
+    // BRIDGE — free; always open; sets F_BRIDGE_BRIEFED; small O2 and Mor gain
+    {.title = "BRIDGE", .verb = "Review", .rows = ROWS_BRIDGE, .rowCount = 8,
+     .resourceDeltas = {0, 0, 1, 0, -1, 0, 2, 0},
+     .progressDelta = 2, .trackerIndex = 0,
+     .flagMask = F_BRIDGE_BRIEFED,
+     .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1,
+     .objective = "Review ship status and plan ahead"},
+
+    // MARKET — costs 10 Cr per action; sets F_FIRST_TRADE; earn Cr, fill Cargo
+    {.title = "MARKET", .verb = "Trade", .rows = ROWS_MARKET, .rowCount = 8,
+     .resourceDeltas = {12, 0, 0, 0, 2, 3, 0, -2},
+     .progressDelta = 3, .trackerIndex = 1,
+     .flagMask = F_FIRST_TRADE,
+     .costResource = R_CR, .costAmount = 10, .requireFlags = 0,
+     .trackerDelta = 1,
+     .objective = "Buy low, sell high (-10 Cr stake)"},
+
+    // ROUTES — costs Fuel; sets F_ROUTE_FLOWN; main progress engine
+    {.title = "ROUTES", .verb = "Jump", .rows = ROWS_ROUTE, .rowCount = 8,
+     .resourceDeltas = {0, -6, -3, -1, 3, 0, -2, 0},
+     .progressDelta = 6, .trackerIndex = 2,
+     .flagMask = F_ROUTE_FLOWN,
+     .costResource = R_FUEL, .costAmount = 6, .requireFlags = 0,
+     .trackerDelta = 1,
+     .objective = "Fly a leg (-6 Fuel, +Heat, event)"},
+
+    // CARGO — free; requires at least one trade; lowers Heat and Cargo pressure
+    {.title = "CARGO", .verb = "Manage", .rows = ROWS_CARGO, .rowCount = 8,
+     .resourceDeltas = {0, 0, 0, 0, -2, -3, 1, 0},
+     .progressDelta = 1, .trackerIndex = 3,
+     .flagMask = 0,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_FIRST_TRADE,
+     .trackerDelta = 1,
+     .objective = "Manage hold (needs a trade first)"},
+
+    // CREW — costs 15 Cr; requires route flown; sets F_CREW_HIRED; Mor + O2
+    {.title = "CREW", .verb = "Hire", .rows = ROWS_CREW, .rowCount = 8,
+     .resourceDeltas = {0, 0, 2, 2, 0, 0, 4, -3},
+     .progressDelta = 3, .trackerIndex = 4,
+     .flagMask = F_CREW_HIRED,
+     .costResource = R_CR, .costAmount = 15, .requireFlags = F_ROUTE_FLOWN,
+     .trackerDelta = 1,
+     .objective = "Sign crew (-15 Cr, needs Route)"},
+
+    // SHIP — costs 25 Cr; requires crew hired; sets F_UPGRADED; Hull + Fuel
+    {.title = "SHIP", .verb = "Upgrade", .rows = ROWS_SHIP, .rowCount = 8,
+     .resourceDeltas = {0, 4, 3, 4, -2, 2, 0, 0},
+     .progressDelta = 4, .trackerIndex = 5,
+     .flagMask = F_UPGRADED,
+     .costResource = R_CR, .costAmount = 25, .requireFlags = F_CREW_HIRED,
+     .trackerDelta = 1,
+     .objective = "Install upgrade (-25 Cr, needs Crew)"},
+
+    // LOG — free; requires relic found via events; sets F_RELIC_AWAKENED path
+    {.title = "LOG", .verb = "Trace", .rows = ROWS_LOG, .rowCount = 8,
+     .resourceDeltas = {2, 0, 0, 0, -1, 0, 1, -2},
+     .progressDelta = 5, .trackerIndex = 6,
+     .flagMask = F_RELIC_AWAKENED,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_RELIC_FOUND,
+     .trackerDelta = 1,
+     .objective = "Trace relic data (needs Relic)"},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Star Trader",
-    "star-trader-pocket-frontier",
-    "Ship-console trading sim",
-    "STPF2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    180,
-    0x07FF,
-    0xFD20
+static const CGC::EventDef EVENTS[] = {
+    // --- Common filler: always eligible ---
+    {.name = "Clear Skies",
+     .note = "Uneventful leg; crew rests a little.",
+     .resourceDeltas = {0, 0, 2, 0, 0, 0, 2, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 4,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Tailwind Burn",
+     .note = "Engine timing perfect; saves fuel.",
+     .resourceDeltas = {0, 3, 0, 0, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Micro-Debris",
+     .note = "Hull scratches; minor O2 leak patched.",
+     .resourceDeltas = {0, 0, -2, -2, 0, 0, -1, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Crew Squabble",
+     .note = "Argument in the hold; morale dips.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 0, -3, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    // --- Route-active events ---
+    {.name = "Pirate Demand",
+     .note = "Pay up or run; hull takes grazing hit.",
+     .resourceDeltas = {-8, 0, 0, -3, 4, 0, -2, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 2, .repDelta = -1, .weight = 3,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Customs Scan",
+     .note = "Papers pass; clean manifest holds.",
+     .resourceDeltas = {0, 0, 0, 0, -2, 0, 1, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 1, .repDelta = 1, .weight = 3,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Contraband Flag",
+     .note = "Inspector flags cargo; fine levied.",
+     .resourceDeltas = {-12, 0, 0, 0, 6, -2, -1, 4},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 1, .repDelta = -2, .weight = 2,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = F_UPGRADED, .tone = CGC::TONE_BAD},
+
+    {.name = "Salvage Beacon",
+     .note = "Derelict yields parts and O2 canisters.",
+     .resourceDeltas = {5, 0, 4, 2, 0, 0, 1, 0},
+     .setFlags = 0, .trackerIndex = 7, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Meteor Volley",
+     .note = "Cluster strike; hull breached, patched.",
+     .resourceDeltas = {0, 0, -3, -5, 1, 0, -3, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Market Swing",
+     .note = "Arrival price surge; cargo sells high.",
+     .resourceDeltas = {10, 0, 0, 0, 0, -2, 0, -3},
+     .setFlags = 0, .trackerIndex = 1, .trackerDelta = 1,
+     .repIndex = 0, .repDelta = 1, .weight = 2,
+     .requireFlags = F_FIRST_TRADE, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Distress Call",
+     .note = "You respond; spare O2 and Cr shared.",
+     .resourceDeltas = {-5, 0, -3, 0, -2, 0, 3, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = 2, .weight = 2,
+     .requireFlags = F_BRIDGE_BRIEFED, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Fuel Cache",
+     .note = "Abandoned pod has sealed fuel cells.",
+     .resourceDeltas = {0, 5, 0, 0, 0, 0, 1, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // --- Gated story beats ---
+    {.name = "Alien Ruin Ping",
+     .note = "Old infrastructure; relic fragment logged.",
+     .resourceDeltas = {0, 0, 0, 0, 1, 0, 0, 0},
+     .setFlags = F_RELIC_FOUND, .trackerIndex = 6, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_UPGRADED, .forbidFlags = F_RELIC_FOUND, .tone = CGC::TONE_GOOD},
+
+    {.name = "Faction Envoy",
+     .note = "Representative offers trade exclusivity.",
+     .resourceDeltas = {8, 0, 0, 0, -3, 0, 2, -4},
+     .setFlags = F_FACTION_PACT, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 3, .repDelta = 3, .weight = 2,
+     .requireFlags = F_CREW_HIRED | F_FIRST_TRADE, .forbidFlags = F_FACTION_PACT, .tone = CGC::TONE_GOOD},
+
+    {.name = "Black Market Offer",
+     .note = "Huge profit with serious heat penalty.",
+     .resourceDeltas = {20, 0, 0, 0, 8, 2, 0, 0},
+     .setFlags = F_PIRATE_DEAL, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 2, .repDelta = 2, .weight = 1,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = F_FACTION_PACT, .tone = CGC::TONE_BAD},
+
+    {.name = "Corp Data Offer",
+     .note = "Megacorp wants your route logs; easy Cr.",
+     .resourceDeltas = {15, 0, 0, 0, 0, 0, -2, 0},
+     .setFlags = F_CORP_PAWN, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 3, .repDelta = -2, .weight = 1,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = F_FACTION_PACT, .tone = CGC::TONE_BAD},
+
+    {.name = "Debt Collector",
+     .note = "Agent boards ship; forced payment made.",
+     .resourceDeltas = {-10, 0, 0, -1, 3, 0, -2, -5},
+     .setFlags = F_DEBT_RESOLVED, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_ROUTE_FLOWN, .forbidFlags = F_DEBT_RESOLVED, .tone = CGC::TONE_BAD},
+
+    {.name = "Relic Awakens",
+     .note = "Fragment broadcasts; coordinates confirmed.",
+     .resourceDeltas = {0, 0, 0, 0, 2, 0, 4, -3},
+     .setFlags = F_RELIC_AWAKENED, .trackerIndex = 6, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = F_RELIC_FOUND | F_UPGRADED, .forbidFlags = F_RELIC_AWAKENED, .tone = CGC::TONE_GOOD},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+static const CGC::EndingDef ENDINGS[] = {
+    // Most-specific first
+
+    {.name = "Relic Awakener",
+     .note = "Ancient coordinates answered. You led them there.",
+     .cond = {.resourceIndex = R_CR, .resourceMin = 30, .resourceMax = 999,
+              .trackerIndex = 6, .trackerMin = 3,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_RELIC_AWAKENED,
+              .forbidFlags = F_CORP_PAWN,
+              .requiresVictory = true}},
+
+    {.name = "Frontier Savior",
+     .note = "You backed the faction. The frontier is safer.",
+     .cond = {.resourceIndex = R_MOR, .resourceMin = 50, .resourceMax = 100,
+              .trackerIndex = 4, .trackerMin = 3,
+              .repIndex = 3, .repMin = 3,
+              .requireFlags = F_FACTION_PACT | F_CREW_HIRED,
+              .forbidFlags = F_PIRATE_DEAL,
+              .requiresVictory = true}},
+
+    {.name = "Pirate Bargain",
+     .note = "You dealt with the dark side. Good living, bad rep.",
+     .cond = {.resourceIndex = R_CR, .resourceMin = 60, .resourceMax = 999,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = 2, .repMin = 2,
+              .requireFlags = F_PIRATE_DEAL,
+              .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    {.name = "Corporate Pawn",
+     .note = "Your route data is a product now. They own you.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_CORP_PAWN,
+              .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Catch-all victory: honest merchant
+    {.name = "Merchant Star",
+     .note = "Clean ledger, loyal crew, open frontier. Well done.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0,
+              .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // Catch-all loss: lost ship
+    {.name = "Lost Ship",
+     .note = "Fuel gone, hull cracked. No signal came back.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0,
+              .forbidFlags = 0,
+              .requiresVictory = false}},
+};
+
+static const char* const TRACKER_LABELS[] = {
+    "Reviews",   // 0 — BRIDGE visits
+    "Trades",    // 1 — MARKET actions
+    "Routes",    // 2 — legs flown
+    "Cargo Ops", // 3 — CARGO actions
+    "Crew",      // 4 — crew signed
+    "Upgrades",  // 5 — upgrades installed
+    "Relics",    // 6 — relic fragments
+    "Salvage",   // 7 — salvage events
+};
+
+static const CGC::DeepGameDefinition DEF = {
+    .title       = "Star Trader",
+    .slug        = "star-trader-pocket-frontier",
+    .subtitle    = "Ship-console trading sim",
+    .saveMagic   = "STPF2",
+    .resources   = RESOURCES,
+    .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens     = SCREENS,
+    .screenCount = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events      = EVENTS,
+    .eventCount  = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings     = ENDINGS,
+    .endingCount = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 180,
+    .accentColor    = 0x07FF,
+    .warningColor   = 0xFD20,
+    .trackerLabels  = TRACKER_LABELS,
+    .trackerLabelCount = 8,
+    .objective   = "Trade, fly, and survive the frontier.",
+    .primaryTracker = 2,  // Routes flown as headline
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
