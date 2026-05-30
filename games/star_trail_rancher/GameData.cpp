@@ -1,180 +1,375 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Cred", 70, 0, 999, 5, -3},
-    {"Fuel", 50, 0, 120, -4, 7},
-    {"O2", 60, 0, 120, -3, 6},
-    {"Feed", 45, 0, 120, -4, 6},
-    {"Med", 5, 0, 99, -1, 1},
-    {"Mor", 70, 0, 100, -2, 4},
-    {"Hull", 90, 0, 100, -2, 5},
+namespace CGC = CardputerGameCore;
+
+// Resource indices — keep in sync with RESOURCES order.
+// R_STRESS and R_QRISK are inverted (high is bad).
+enum {
+  R_CRED,   // Credits
+  R_FUEL,   // Fuel (survival — primaryDelta < 0)
+  R_O2,     // Oxygen reserves
+  R_FEED,   // Creature feed
+  R_MED,    // Med gel
+  R_HULL,   // Hull integrity
+  R_STRESS, // Creature stress (inverted, high = bad)
+  R_QRISK,  // Quarantine risk (inverted, high = bad)
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_0[] = {
-    {"Hatch 01", "Review hatch #1: sets route context"},
-    {"Cold 02", "Review cold #2: sets route context"},
-    {"Heat 03", "Review heat #3: sets route context"},
-    {"Wet 04", "Review wet #4: sets route context"},
-    {"Low-G 05", "Review low-g #5: sets route context"},
-    {"Quar 06", "Review quar #6: sets route context"},
-    {"Sanctuary 07", "Review sanctuary #7: sets route context"},
-    {"Market 08", "Review market #8: sets route context"},
-    {"Black 09", "Review black #9: sets route context"},
-    {"Gate 10", "Review gate #10: sets route context"},
-    {"Nursery 11", "Review nursery #11: sets route context"},
-    {"Clinic 12", "Review clinic #12: sets route context"},
+// Story flags — set cleanly by screens, advanced by events.
+enum : uint32_t {
+  F_CONTRACT    = 1u << 0,  // a contract is accepted (set by JOBS)
+  F_HAB_READY   = 1u << 1,  // habitats assigned and checked (set by HAB)
+  F_PAPERS      = 1u << 2,  // inspection papers bought (set by MARKET)
+  F_UNKNOWN_EGG = 1u << 3,  // unknown egg discovered mid-route (event)
+  F_SANCTUARY   = 1u << 4,  // chose sanctuary delivery path
+  F_BLACK_MKT   = 1u << 5,  // sold to black market buyer
+  F_CORP_DEAL   = 1u << 6,  // signed corporate transporter contract
+  F_DISCOVERY   = 1u << 7,  // new species catalogued and protected
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_1[] = {
-    {"Transport 01", "Accept transport #1: loads creature cargo"},
-    {"Rescue 02", "Accept rescue #2: loads creature cargo"},
-    {"Research 03", "Accept research #3: loads creature cargo"},
-    {"Sanctuary 04", "Accept sanctuary #4: loads creature cargo"},
-    {"Market 05", "Accept market #5: loads creature cargo"},
-    {"Loan 06", "Accept loan #6: loads creature cargo"},
-    {"Transport 07", "Accept transport #7: loads creature cargo"},
-    {"Rescue 08", "Accept rescue #8: loads creature cargo"},
-    {"Research 09", "Accept research #9: loads creature cargo"},
-    {"Sanctuary 10", "Accept sanctuary #10: loads creature cargo"},
-    {"Market 11", "Accept market #11: loads creature cargo"},
-    {"Loan 12", "Accept loan #12: loads creature cargo"},
-    {"Transport 13", "Accept transport #13: loads creature cargo"},
-    {"Rescue 14", "Accept rescue #14: loads creature cargo"},
-    {"Research 15", "Accept research #15: loads creature cargo"},
-    {"Sanctuary 16", "Accept sanctuary #16: loads creature cargo"},
-    {"Market 17", "Accept market #17: loads creature cargo"},
-    {"Loan 18", "Accept loan #18: loads creature cargo"},
+// ── RESOURCES ────────────────────────────────────────────────────────────────
+//  label   start min  max  prim safe  warn  bad  inverted
+static const CGC::ResourceDef RESOURCES[] = {
+  {"Cred",    60,  0, 999,  0,   0,   18,    6,  false},
+  {"Fuel",    70,  0, 120, -1,   5,   25,   10,  false},  // loss trigger
+  {"O2",      65,  0, 120,  0,   4,   22,    8,  false},
+  {"Feed",    55,  0, 120,  0,   3,   18,    6,  false},
+  {"Med",     30,  0,  99,  0,   1,   10,    3,  false},
+  {"Hull",    85,  0, 100,  0,   2,   30,   12,  false},
+  {"Stress",   8,  0, 100,  0,  -2,   55,   75,  true},   // inverted: high=bad
+  {"QRisk",    4,  0, 100,  0,  -1,   45,   65,  true},   // inverted: high=bad
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_2[] = {
-    {"Grazer 01", "Tend grazer #1: checks habitat fit"},
-    {"Climber 02", "Tend climber #2: checks habitat fit"},
-    {"Wetling 03", "Tend wetling #3: checks habitat fit"},
-    {"Quillox 04", "Tend quillox #4: checks habitat fit"},
-    {"Glowcalf 05", "Tend glowcalf #5: checks habitat fit"},
-    {"Frostfin 06", "Tend frostfin #6: checks habitat fit"},
-    {"Mire Pup 07", "Tend mire pup #7: checks habitat fit"},
-    {"Starling 08", "Tend starling #8: checks habitat fit"},
-    {"Grazer 09", "Tend grazer #9: checks habitat fit"},
-    {"Climber 10", "Tend climber #10: checks habitat fit"},
-    {"Wetling 11", "Tend wetling #11: checks habitat fit"},
-    {"Quillox 12", "Tend quillox #12: checks habitat fit"},
+// ── SCREEN ROW TABLES ─────────────────────────────────────────────────────────
+
+// BRIDGE — review route context and plan the next haul.
+static const CGC::NamedValue ROWS_BRIDGE[] = {
+  {"Manifest review",   "Audit cargo manifest and hab logs."},
+  {"Fuel check",        "Verify tanks, top-off plan, route calc."},
+  {"O2 inventory",      "Check O2 reserves against route length."},
+  {"Hab status",        "Scan all modules for temp/feed alerts."},
+  {"Hull integrity",    "Run hull stress analysis and patch list."},
+  {"Plot short route",  "Mark a nearby-planet corridor on chart."},
+  {"Plot long route",   "Mark a deep-space corridor on chart."},
+  {"Threat brief",      "Review inspection zones and hazards."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_3[] = {
-    {"Short 01", "Travel short #1: applies live cargo decay"},
-    {"Long 02", "Travel long #2: applies live cargo decay"},
-    {"Quar 03", "Travel quar #3: applies live cargo decay"},
-    {"Storm 04", "Travel storm #4: applies live cargo decay"},
-    {"Gate 05", "Travel gate #5: applies live cargo decay"},
-    {"Moon 06", "Travel moon #6: applies live cargo decay"},
-    {"Short 07", "Travel short #7: applies live cargo decay"},
-    {"Long 08", "Travel long #8: applies live cargo decay"},
-    {"Quar 09", "Travel quar #9: applies live cargo decay"},
-    {"Storm 10", "Travel storm #10: applies live cargo decay"},
-    {"Gate 11", "Travel gate #11: applies live cargo decay"},
-    {"Moon 12", "Travel moon #12: applies live cargo decay"},
-    {"Short 13", "Travel short #13: applies live cargo decay"},
-    {"Long 14", "Travel long #14: applies live cargo decay"},
-    {"Quar 15", "Travel quar #15: applies live cargo decay"},
-    {"Storm 16", "Travel storm #16: applies live cargo decay"},
-    {"Gate 17", "Travel gate #17: applies live cargo decay"},
-    {"Moon 18", "Travel moon #18: applies live cargo decay"},
+// JOBS — accept transport contracts, pick up creatures.
+static const CGC::NamedValue ROWS_JOBS[] = {
+  {"Grazer haul",       "Transport hardy grazers to Duneport."},
+  {"Frostfin charter",  "Move frostfins to the ice-shelf colony."},
+  {"Wetling rescue",    "Emergency pickup: wetlings in dry hab."},
+  {"Research loan",     "Carry a quillox pair for lab study."},
+  {"Sanctuary run",     "Deliver glowcalves to the free refuge."},
+  {"Mire pup transit",  "Haul mire pups through the bog lanes."},
+  {"Rare starling job", "Transport rare starlings; papers needed."},
+  {"Breeding pair",     "Move bonded climbers to colony station."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_4[] = {
-    {"Feed 01", "Buy feed #1: prepares ethical transport"},
-    {"Med Gel 02", "Buy med gel #2: prepares ethical transport"},
-    {"Oxygen 03", "Buy oxygen #3: prepares ethical transport"},
-    {"Papers 04", "Buy papers #4: prepares ethical transport"},
-    {"Habitat 05", "Buy habitat #5: prepares ethical transport"},
-    {"Filter 06", "Buy filter #6: prepares ethical transport"},
-    {"Feed 07", "Buy feed #7: prepares ethical transport"},
-    {"Med Gel 08", "Buy med gel #8: prepares ethical transport"},
-    {"Oxygen 09", "Buy oxygen #9: prepares ethical transport"},
-    {"Papers 10", "Buy papers #10: prepares ethical transport"},
-    {"Habitat 11", "Buy habitat #11: prepares ethical transport"},
-    {"Filter 12", "Buy filter #12: prepares ethical transport"},
+// HAB — assign creatures to modules; reduce stress and quarantine risk.
+static const CGC::NamedValue ROWS_HAB[] = {
+  {"Cold tank",         "Place frostfins in cryo-climate module."},
+  {"Heat bay",          "Settle heat-world grazers in warm bay."},
+  {"Wet pod",           "Submerge wetlings and mire pups in pod."},
+  {"Low-grav stall",    "Float starlings in the low-g chamber."},
+  {"Quarantine lock",   "Isolate high-QRisk creature in locker."},
+  {"Nursery",           "Move juvenile or bonded pair to nursery."},
+  {"Shielded den",      "Transfer quillox to armored den module."},
+  {"Enrichment round",  "Run enrichment to calm all creatures."},
 };
 
-static const CardputerGameCore::NamedValue STAR_TRAIL_RANCHER_ROWS_5[] = {
-    {"Egg 01", "Record egg #1: sets discovery and ending flags"},
-    {"Permit 02", "Record permit #2: sets discovery and ending flags"},
-    {"Sanctuary 03", "Record sanctuary #3: sets discovery and ending flags"},
-    {"Black Port 04", "Record black port #4: sets discovery and ending flags"},
-    {"Rare Buyer 05", "Record rare buyer #5: sets discovery and ending flags"},
-    {"Bond 06", "Record bond #6: sets discovery and ending flags"},
-    {"Egg 07", "Record egg #7: sets discovery and ending flags"},
-    {"Permit 08", "Record permit #8: sets discovery and ending flags"},
-    {"Sanctuary 09", "Record sanctuary #9: sets discovery and ending flags"},
-    {"Black Port 10", "Record black port #10: sets discovery and ending flags"},
-    {"Rare Buyer 11", "Record rare buyer #11: sets discovery and ending flags"},
-    {"Bond 12", "Record bond #12: sets discovery and ending flags"},
+// ROUTE — fly a route leg; costs Fuel and stresses the ship.
+static const CGC::NamedValue ROWS_ROUTE[] = {
+  {"Short hop",         "Quick corridor; low risk, low Fuel cost."},
+  {"Deep-space leg",    "Long crossing; high Fuel, rich reward."},
+  {"Quarantine lane",   "Cleared path; needs papers or detour."},
+  {"Storm corridor",    "Risk hull damage for a faster arrival."},
+  {"Gate transit",      "Use jump gate; cheaper Fuel, flat fee."},
+  {"Moon relay",        "Slow moon-hop; safer but burns O2."},
+  {"Smuggler bypass",   "Skips inspections; raises QRisk."},
+  {"Sanctuary lane",    "Scenic route; calms creatures in transit."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"BRIDGE", "Review", STAR_TRAIL_RANCHER_ROWS_0, 12, {1, 0, 0, -1, 0, 1, 0, 0}, 3, 0, 1UL},
-    {"JOBS", "Accept", STAR_TRAIL_RANCHER_ROWS_1, 18, {7, -1, -1, -2, 0, 1, -1, 0}, 5, 1, 2UL},
-    {"HAB", "Tend", STAR_TRAIL_RANCHER_ROWS_2, 12, {-1, 0, -1, -3, -1, 3, 0, 0}, 3, 2, 4UL},
-    {"ROUTE", "Travel", STAR_TRAIL_RANCHER_ROWS_3, 18, {6, -5, -4, -5, -1, -3, -2, 0}, 5, 3, 8UL},
-    {"MARKET", "Buy", STAR_TRAIL_RANCHER_ROWS_4, 12, {-7, 2, 3, 3, 1, 1, 1, 0}, 4, 4, 16UL},
-    {"LOG", "Record", STAR_TRAIL_RANCHER_ROWS_5, 12, {1, 0, 0, 0, 0, 2, 0, 0}, 3, 5, 32UL},
+// CARE — feed and treat creatures; costs Feed and Med.
+static const CGC::NamedValue ROWS_CARE[] = {
+  {"Full rations",      "Issue full feed for all cargo creatures."},
+  {"Med gel treatment", "Apply gel to stressed or sick creatures."},
+  {"Quarantine flush",  "Disinfect quarantine locker; cuts QRisk."},
+  {"Stress relief",     "Run calming protocol; lower stress fast."},
+  {"Injury triage",     "Treat wounds; costs Med but saves hull."},
+  {"Nutrition boost",   "Premium feed; cost more, better results."},
+  {"Hydration cycle",   "Water-world species get deep soak."},
+  {"Health check",      "Full scan; can reveal hidden QRisk."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Discovery 19", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Trouble 20", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Favor 21", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Warning 22", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Breakthrough 23", "A bespoke Star Trail Ranch event changes saved state and story flags."},
-    {"Setback 24", "A bespoke Star Trail Ranch event changes saved state and story flags."},
+// MARKET / INSPECT — buy supplies, pay customs, trade cargo.
+static const CGC::NamedValue ROWS_MARKET[] = {
+  {"Restock feed",      "Buy bulk creature feed at port rates."},
+  {"Buy med gel",       "Purchase medical gel packs."},
+  {"Top off O2",        "Refill oxygen reserve tanks."},
+  {"Buy transit papers","Get inspection papers before next leg."},
+  {"Hab module parts",  "Buy upgrade parts; lowers stress long-term."},
+  {"Pay customs",       "Settle customs fees; clears QRisk alert."},
+  {"Sell cargo goods",  "Offload non-creature cargo for credits."},
+  {"Black market offer","High-risk sale; illegal but lucrative."},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Sanctuary Fleet", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Corp Ranch", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Smuggler Hold", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Discovery Ark", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Creature Riot", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Stranded Ship", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// LOG / DISCOVERY — record finds, confirm sanctuary choices, name species.
+static const CGC::NamedValue ROWS_LOG[] = {
+  {"Log egg find",      "Record unknown egg found in hab module."},
+  {"Name new species",  "Catalogue species and file with registry."},
+  {"Sanctuary pledge",  "Commit delivery to free-range refuge."},
+  {"Bond record",       "Note crew-creature bond in the log."},
+  {"Rare buyer note",   "Log black-market contact for later."},
+  {"Permit registry",   "File transport permits for rare cargo."},
+  {"Extinction tip",    "Document rumoured species loss pattern."},
+  {"Research dossier",  "Compile scan data for science partner."},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Star Trail Ranch",
-    "star-trail-rancher",
-    "Creature transport sim",
-    "STR2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    170,
-    0xF81F,
-    0xFD20
+// ── SCREENS ───────────────────────────────────────────────────────────────────
+// resourceDeltas order: Cred, Fuel, O2, Feed, Med, Hull, Stress, QRisk
+static const CGC::DeepScreenDef SCREENS[] = {
+  // BRIDGE — free planning; sets F_CONTRACT flag (clears old debt on review).
+  {.title = "BRIDGE", .verb = "Plan", .rows = ROWS_BRIDGE, .rowCount = 8,
+   .resourceDeltas = {0, 1, 1, 0, 0, 1, -1, -1}, .progressDelta = 1, .trackerIndex = 0,
+   .flagMask = 0, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Plan the route and check cargo"},
+
+  // JOBS — accept a contract; costs nothing but requires no active contract.
+  {.title = "JOBS", .verb = "Accept", .rows = ROWS_JOBS, .rowCount = 8,
+   .resourceDeltas = {8, 0, 0, -2, 0, 0, 2, 1}, .progressDelta = 2, .trackerIndex = 1,
+   .flagMask = F_CONTRACT, .costResource = -1, .costAmount = 0, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Accept a creature transport contract"},
+
+  // HAB — assign creatures; costs Feed and reduces Stress/QRisk. Needs contract.
+  {.title = "HAB", .verb = "Assign", .rows = ROWS_HAB, .rowCount = 8,
+   .resourceDeltas = {0, 0, 0, -3, 0, 0, -4, -3}, .progressDelta = 2, .trackerIndex = 2,
+   .flagMask = F_HAB_READY, .costResource = R_FEED, .costAmount = 5, .requireFlags = F_CONTRACT,
+   .trackerDelta = 1, .objective = "Assign creatures to hab modules (-5 Feed)"},
+
+  // ROUTE — fly a leg; costs Fuel. Needs hab assignment.
+  {.title = "ROUTE", .verb = "Fly", .rows = ROWS_ROUTE, .rowCount = 8,
+   .resourceDeltas = {12, -8, -3, -4, 0, -2, 3, 2}, .progressDelta = 5, .trackerIndex = 3,
+   .flagMask = 0, .costResource = R_FUEL, .costAmount = 10, .requireFlags = F_HAB_READY,
+   .trackerDelta = 1, .objective = "Fly a route leg (-10 Fuel)"},
+
+  // CARE — feed and treat; costs Med. Open any time.
+  {.title = "CARE", .verb = "Treat", .rows = ROWS_CARE, .rowCount = 8,
+   .resourceDeltas = {0, 0, 0, -4, -3, 0, -5, -4}, .progressDelta = 2, .trackerIndex = 4,
+   .flagMask = 0, .costResource = R_MED, .costAmount = 4, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Feed and treat creatures (-4 Med)"},
+
+  // MARKET — buy supplies, pay customs, trade goods. Costs Credits.
+  {.title = "MARKET", .verb = "Buy", .rows = ROWS_MARKET, .rowCount = 8,
+   .resourceDeltas = {-10, 3, 3, 4, 3, 2, -1, -2}, .progressDelta = 1, .trackerIndex = 5,
+   .flagMask = F_PAPERS, .costResource = R_CRED, .costAmount = 12, .requireFlags = 0,
+   .trackerDelta = 1, .objective = "Restock supplies at port (-12 Cred)"},
+
+  // LOG — record discoveries, pledge sanctuary. Needs F_UNKNOWN_EGG to unlock discovery arc.
+  {.title = "LOG", .verb = "Record", .rows = ROWS_LOG, .rowCount = 8,
+   .resourceDeltas = {2, 0, 0, 0, 0, 0, -1, -1}, .progressDelta = 3, .trackerIndex = 6,
+   .flagMask = F_DISCOVERY, .costResource = -1, .costAmount = 0, .requireFlags = F_UNKNOWN_EGG,
+   .trackerDelta = 1, .objective = "Catalogue species (needs egg find)"},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+// resourceDeltas order: Cred, Fuel, O2, Feed, Med, Hull, Stress, QRisk
+static const CGC::EventDef EVENTS[] = {
+  // --- Common neutral/filler ---
+  {.name = "Calm transit", .note = "Creatures settle; smooth crossing.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, -2, 0}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 5,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Feed drop", .note = "A feeder jams; creatures go hungry.",
+   .resourceDeltas = {0, 0, 0, -3, 0, 0, 4, 0}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Trade wind", .note = "Favorable drift cuts fuel by a day.",
+   .resourceDeltas = {0, 4, 0, 0, 0, 0, 0, 0}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 3,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  {.name = "Micro-debris hit", .note = "Pebble-strike chips the hull plating.",
+   .resourceDeltas = {0, 0, 0, 0, 0, -4, 2, 0}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  // --- Creature care events ---
+  {.name = "Creature panic", .note = "Three creatures thrash hab walls.",
+   .resourceDeltas = {0, 0, 0, -2, -2, -3, 8, 2}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_CONTRACT, .forbidFlags = F_HAB_READY, .tone = CGC::TONE_BAD},
+
+  {.name = "Escape attempt", .note = "A climber slips out of its stall.",
+   .resourceDeltas = {0, 0, -2, 0, -2, -2, 6, 3}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = 0, .repDelta = -1, .weight = 2,
+   .requireFlags = F_CONTRACT, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Sickness outbreak", .note = "Two mire pups show fever signs.",
+   .resourceDeltas = {0, 0, 0, 0, -4, 0, 5, 6}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = F_CONTRACT, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Creature bond", .note = "A glowcalf calms the whole cargo hold.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, -5, -2}, .setFlags = 0, .trackerIndex = 2,
+   .trackerDelta = 1, .repIndex = 1, .repDelta = 1, .weight = 2,
+   .requireFlags = F_HAB_READY, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+  // --- Inspection and customs events ---
+  {.name = "Port inspection", .note = "Customs boards; papers clear you fast.",
+   .resourceDeltas = {-4, 0, 0, 0, 0, 0, 0, -4}, .setFlags = 0, .trackerIndex = 5,
+   .trackerDelta = 1, .repIndex = 2, .repDelta = 1, .weight = 3,
+   .requireFlags = F_PAPERS, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Unregistered cargo", .note = "No papers; you pay a steep fine.",
+   .resourceDeltas = {-12, 0, 0, 0, 0, 0, 3, 5}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = 2, .repDelta = -2, .weight = 2,
+   .requireFlags = 0, .forbidFlags = F_PAPERS, .tone = CGC::TONE_BAD},
+
+  // --- Discovery / species events ---
+  {.name = "Unknown egg", .note = "An unregistered egg found in a feeder.",
+   .resourceDeltas = {0, 0, 0, -1, 0, 0, 0, 3}, .setFlags = F_UNKNOWN_EGG, .trackerIndex = 6,
+   .trackerDelta = 1, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = F_UNKNOWN_EGG, .tone = CGC::TONE_NEUTRAL},
+
+  {.name = "Species signal", .note = "Scanner pings a creature not in the DB.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, 0, 2}, .setFlags = F_UNKNOWN_EGG, .trackerIndex = 6,
+   .trackerDelta = 1, .repIndex = 1, .repDelta = 1, .weight = 1,
+   .requireFlags = 0, .forbidFlags = F_UNKNOWN_EGG, .tone = CGC::TONE_GOOD},
+
+  // --- Ethical fork events ---
+  {.name = "Black market offer", .note = "Buyer offers double for the rare cargo.",
+   .resourceDeltas = {16, 0, 0, 0, 0, 0, 0, 4}, .setFlags = F_BLACK_MKT, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = 0, .repDelta = -2, .weight = 1,
+   .requireFlags = F_CONTRACT, .forbidFlags = F_SANCTUARY, .tone = CGC::TONE_BAD},
+
+  {.name = "Sanctuary contact", .note = "Free-range refuge offers a delivery bond.",
+   .resourceDeltas = {4, 0, 0, 0, 0, 0, -3, -2}, .setFlags = F_SANCTUARY, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = 1, .repDelta = 2, .weight = 2,
+   .requireFlags = F_CONTRACT, .forbidFlags = F_BLACK_MKT, .tone = CGC::TONE_GOOD},
+
+  {.name = "Corp recruiter", .note = "Corporate agent wants exclusivity.",
+   .resourceDeltas = {10, 5, 0, 3, 0, 0, 0, 0}, .setFlags = F_CORP_DEAL, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = 3, .repDelta = 2, .weight = 1,
+   .requireFlags = 0, .forbidFlags = F_SANCTUARY, .tone = CGC::TONE_NEUTRAL},
+
+  // --- Ship hazard events ---
+  {.name = "O2 scrubber fault", .note = "Scrubber clogs; reserves drop fast.",
+   .resourceDeltas = {0, 0, -6, 0, 0, 0, 4, 0}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+  {.name = "Quarantine alarm", .note = "QRisk spikes; isolate now or face reroute.",
+   .resourceDeltas = {0, 0, 0, 0, -3, 0, 3, 8}, .setFlags = 0, .trackerIndex = -1,
+   .trackerDelta = 0, .repIndex = -1, .repDelta = 0, .weight = 2,
+   .requireFlags = 0, .forbidFlags = F_PAPERS, .tone = CGC::TONE_BAD},
+
+  // --- Gated discovery endgame ---
+  {.name = "Extinction alert", .note = "A species vanish pattern emerges in data.",
+   .resourceDeltas = {0, 0, 0, 0, 0, 0, 0, 0}, .setFlags = F_DISCOVERY, .trackerIndex = 6,
+   .trackerDelta = 2, .repIndex = 1, .repDelta = 3, .weight = 3,
+   .requireFlags = F_UNKNOWN_EGG, .forbidFlags = F_BLACK_MKT, .tone = CGC::TONE_GOOD},
+};
+
+// ── ENDINGS ───────────────────────────────────────────────────────────────────
+// Most-specific first; catch-all victory last, then catch-all loss.
+static const CGC::EndingDef ENDINGS[] = {
+  // 1. Sanctuary Fleet — ethical path, no black market dealings.
+  {.name = "Sanctuary Fleet",
+   .note = "Your refuge fleet becomes the frontier standard.",
+   .cond = {.resourceIndex = R_STRESS, .resourceMin = 0, .resourceMax = 40,
+            .trackerIndex = 3, .trackerMin = 4,
+            .repIndex = 1, .repMin = 4,
+            .requireFlags = F_SANCTUARY | F_DISCOVERY,
+            .forbidFlags = F_BLACK_MKT,
+            .requiresVictory = true}},
+
+  // 2. Discovery Ark — catalogued species without selling them.
+  {.name = "Discovery Ark",
+   .note = "A new species registry bears your captain name.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = 6, .trackerMin = 3,
+            .repIndex = 1, .repMin = 3,
+            .requireFlags = F_DISCOVERY,
+            .forbidFlags = F_BLACK_MKT,
+            .requiresVictory = true}},
+
+  // 3. Corporate Transporter — signed corp deal, no sanctuary.
+  {.name = "Corp Transporter",
+   .note = "The frontier franchise bears the company brand.",
+   .cond = {.resourceIndex = R_CRED, .resourceMin = 80, .resourceMax = 999,
+            .trackerIndex = -1, .trackerMin = 0,
+            .repIndex = 3, .repMin = 3,
+            .requireFlags = F_CORP_DEAL,
+            .forbidFlags = F_SANCTUARY,
+            .requiresVictory = true}},
+
+  // 4. Smuggler Hold — took black market deals, ran the bypass.
+  {.name = "Smuggler Hold",
+   .note = "Rich and wanted; the hold hides the rare cargo.",
+   .cond = {.resourceIndex = R_CRED, .resourceMin = 70, .resourceMax = 999,
+            .trackerIndex = -1, .trackerMin = 0,
+            .repIndex = 0, .repMin = 0,
+            .requireFlags = F_BLACK_MKT,
+            .forbidFlags = F_SANCTUARY,
+            .requiresVictory = true}},
+
+  // 5. Catch-all victory — completed the haul, no special distinction.
+  {.name = "Frontier Captain",
+   .note = "Cargo delivered; the route log earns you a rep.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0,
+            .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0,
+            .requiresVictory = true}},
+
+  // 6. Stranded Ship — loss ending.
+  {.name = "Stranded Ship",
+   .note = "Fuel gone; the creatures and crew drift in silence.",
+   .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+            .trackerIndex = -1, .trackerMin = 0,
+            .repIndex = -1, .repMin = 0,
+            .requireFlags = 0, .forbidFlags = 0,
+            .requiresVictory = false}},
+};
+
+// ── TRACKER LABELS ────────────────────────────────────────────────────────────
+static const char* const TRACKER_LABELS[] = {
+  "Routes",     // 0
+  "Contracts",  // 1
+  "Creatures",  // 2
+  "Legs",       // 3
+  "Care",       // 4
+  "Inspections",// 5
+  "Species",    // 6
+  nullptr,      // 7
+};
+
+// ── GAME DEFINITION ───────────────────────────────────────────────────────────
+static const CGC::DeepGameDefinition DEF = {
+  .title = "Star Trail Ranch",
+  .slug = "star-trail-rancher",
+  .subtitle = "Creature transport sim",
+  .saveMagic = "STR2",
+  .resources = RESOURCES,
+  .resourceCount = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+  .screens = SCREENS,
+  .screenCount = sizeof(SCREENS) / sizeof(SCREENS[0]),
+  .events = EVENTS,
+  .eventCount = sizeof(EVENTS) / sizeof(EVENTS[0]),
+  .endings = ENDINGS,
+  .endingCount = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+  .targetProgress = 150,
+  .accentColor = 0xF81F,
+  .warningColor = 0xFD20,
+  .trackerLabels = TRACKER_LABELS,
+  .trackerLabelCount = 8,
+  .objective = "Haul creatures; keep them alive en route.",
+  .primaryTracker = 1,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
