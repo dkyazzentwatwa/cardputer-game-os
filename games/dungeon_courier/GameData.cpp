@@ -1,241 +1,417 @@
 #include "GameData.h"
 
-static const CardputerGameCore::ResourceDef RESOURCES[] = {
-    {"Gold", 35, 0, 999, 5, -2},
-    {"Food", 8, 0, 50, -1, 3},
-    {"Stam", 80, 0, 100, -6, 12},
-    {"Stress", 8, 0, 100, 4, -8},
-    {"Pack", 100, 0, 100, -5, 4},
-    {"Stamp", 0, 0, 99, 2, 0},
-    {"Susp", 0, 0, 100, 3, -2},
-    {"Wound", 0, 0, 9, 1, -1},
+namespace CGC = CardputerGameCore;
+
+// Resource indices (keep names in sync with RESOURCES order).
+enum { R_GOLD, R_STAM, R_PACK, R_STRESS, R_WOUND, R_SUSP, R_STAMP };
+
+// Story flags. Screens set these; events advance the arc.
+enum : uint32_t {
+  F_JOB_ACTIVE   = 1u << 0,  // accepted a contract from BOARD
+  F_SUPPLIED     = 1u << 1,  // bought supplies before a route leg
+  F_EN_ROUTE     = 1u << 2,  // currently travelling a route leg
+  F_PKG_WEIRD    = 1u << 3,  // package is unusual (set by PACKAGE screen)
+  F_PKG_OPENED   = 1u << 4,  // courier opened a sealed parcel
+  F_CURSED       = 1u << 5,  // a cursed package or act flagged the run
+  F_RIVAL_MET    = 1u << 6,  // encountered a rival courier
+  F_PERK_BOUGHT  = 1u << 7,  // purchased at least one perk
+  F_LATE_GAME    = 1u << 8,  // earned 8+ stamps — guild trial unlocked
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_0[] = {
-    {"Root 01", "Work root #1: updates local faction mood"},
-    {"Bell 02", "Work bell #2: updates local faction mood"},
-    {"Moss 03", "Work moss #3: updates local faction mood"},
-    {"Ash 04", "Work ash #4: updates local faction mood"},
-    {"Glass 05", "Work glass #5: updates local faction mood"},
-    {"Rune 06", "Work rune #6: updates local faction mood"},
-    {"Ledger 07", "Work ledger #7: updates local faction mood"},
-    {"Moon 08", "Work moon #8: updates local faction mood"},
-    {"Crown 09", "Work crown #9: updates local faction mood"},
+// ---------------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------------
+static const CGC::ResourceDef RESOURCES[] = {
+    // label   start  min   max  prim  safe  warn  bad   inverted
+    {"Gold",    45,    0,   999,   0,    0,   15,    5,  false},
+    {"Stam",    80,    0,   100,  -1,    5,   28,   12,  false},  // depletion = loss
+    {"Pack",   100,    0,   100,   0,    0,   40,   20,  false},  // integrity, low=bad
+    {"Stress",   4,    0,   100,   0,    0,   -1,   -1,  false},  // no auto-warn; endings read it
+    {"Wound",    0,    0,    12,   0,    0,   -1,   -1,  false},  // no auto-warn; endings read it
+    {"Susp",     3,    0,   100,   0,    0,   50,   75,  true},   // high is bad
+    {"Stamp",    0,    0,    99,   0,    0,   -1,   -1,  false},  // career counter, no warn
+    {"",         0,    0,     0,   0,    0,   -1,   -1,  false},  // unused slot 7
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_1[] = {
-    {"Candle 01", "Take candle #1: sets one active delivery job"},
-    {"Ledger 02", "Take ledger #2: sets one active delivery job"},
-    {"Crown 03", "Take crown #3: sets one active delivery job"},
-    {"Witch 04", "Take witch #4: sets one active delivery job"},
-    {"Vault 05", "Take vault #5: sets one active delivery job"},
-    {"Moon 06", "Take moon #6: sets one active delivery job"},
-    {"Lock 07", "Take lock #7: sets one active delivery job"},
-    {"River 08", "Take river #8: sets one active delivery job"},
-    {"Ash 09", "Take ash #9: sets one active delivery job"},
-    {"Root 10", "Take root #10: sets one active delivery job"},
-    {"Bell 11", "Take bell #11: sets one active delivery job"},
-    {"Moss 12", "Take moss #12: sets one active delivery job"},
-    {"Candle 13", "Take candle #13: sets one active delivery job"},
-    {"Ledger 14", "Take ledger #14: sets one active delivery job"},
-    {"Crown 15", "Take crown #15: sets one active delivery job"},
-    {"Witch 16", "Take witch #16: sets one active delivery job"},
-    {"Vault 17", "Take vault #17: sets one active delivery job"},
-    {"Moon 18", "Take moon #18: sets one active delivery job"},
-    {"Lock 19", "Take lock #19: sets one active delivery job"},
-    {"River 20", "Take river #20: sets one active delivery job"},
-    {"Ash 21", "Take ash #21: sets one active delivery job"},
-    {"Root 22", "Take root #22: sets one active delivery job"},
-    {"Bell 23", "Take bell #23: sets one active delivery job"},
-    {"Moss 24", "Take moss #24: sets one active delivery job"},
-    {"Candle 25", "Take candle #25: sets one active delivery job"},
-    {"Ledger 26", "Take ledger #26: sets one active delivery job"},
-    {"Crown 27", "Take crown #27: sets one active delivery job"},
-    {"Witch 28", "Take witch #28: sets one active delivery job"},
-    {"Vault 29", "Take vault #29: sets one active delivery job"},
-    {"Moon 30", "Take moon #30: sets one active delivery job"},
-    {"Lock 31", "Take lock #31: sets one active delivery job"},
-    {"River 32", "Take river #32: sets one active delivery job"},
-    {"Ash 33", "Take ash #33: sets one active delivery job"},
-    {"Root 34", "Take root #34: sets one active delivery job"},
-    {"Bell 35", "Take bell #35: sets one active delivery job"},
-    {"Moss 36", "Take moss #36: sets one active delivery job"},
+// ---------------------------------------------------------------------------
+// Screen rows
+// ---------------------------------------------------------------------------
+
+// BOARD — pick a contract from the job board
+static const CGC::NamedValue ROWS_BOARD[] = {
+    {"Letter to Vex",     "Salt trader wants next-day post."},
+    {"Herbs to Thorngate","Apothecary: keep dry, no peeking."},
+    {"Parcel to Ashfen",  "Wax-sealed. Sender very emphatic."},
+    {"Crate to Stoneholt","Heavy. Rattles. Urgent."},
+    {"Satchel to Mirwell","Guild docs — time-sensitive."},
+    {"Box to the Abbey",  "Marked FRAGILE in three languages."},
+    {"Vial to Deepwick",  "Cold glass. Tongs recommended."},
+    {"Scroll to Caldrun", "Scholar's parcel. No bending."},
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_2[] = {
-    {"Food 01", "Pack food #1: prepares for route choices"},
-    {"Torch 02", "Pack torch #2: prepares for route choices"},
-    {"Bandage 03", "Pack bandage #3: prepares for route choices"},
-    {"Charm 04", "Pack charm #4: prepares for route choices"},
-    {"Rope 05", "Pack rope #5: prepares for route choices"},
-    {"Seal 06", "Pack seal #6: prepares for route choices"},
-    {"Map 07", "Pack map #7: prepares for route choices"},
-    {"Ink 08", "Pack ink #8: prepares for route choices"},
-    {"Food 09", "Pack food #9: prepares for route choices"},
-    {"Torch 10", "Pack torch #10: prepares for route choices"},
-    {"Bandage 11", "Pack bandage #11: prepares for route choices"},
-    {"Charm 12", "Pack charm #12: prepares for route choices"},
-    {"Rope 13", "Pack rope #13: prepares for route choices"},
-    {"Seal 14", "Pack seal #14: prepares for route choices"},
-    {"Map 15", "Pack map #15: prepares for route choices"},
-    {"Ink 16", "Pack ink #16: prepares for route choices"},
+// SUPPLIES — stock up before hitting the road
+static const CGC::NamedValue ROWS_SUPPLIES[] = {
+    {"Rations",     "Trail food eases the road ahead."},
+    {"Bandages",    "Cloth and salve for rough routes."},
+    {"Torch Oil",   "Light for dark tunnels and caves."},
+    {"Rope",        "Bypasses bridge tolls and cliffs."},
+    {"Charm Token", "Ward off curses; calm weird boxes."},
+    {"Wax Seal",    "Re-seal an opened parcel cleanly."},
+    {"Route Map",   "Cuts stamina cost on next leg."},
+    {"Courier Ink", "Official ink for suspect signatures."},
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_3[] = {
-    {"Safe 01", "Run safe #1: consumes supplies and deadline"},
-    {"Common 02", "Run common #2: consumes supplies and deadline"},
-    {"Shortcut 03", "Run shortcut #3: consumes supplies and deadline"},
-    {"Ferry 04", "Run ferry #4: consumes supplies and deadline"},
-    {"Crypt 05", "Run crypt #5: consumes supplies and deadline"},
-    {"Lift 06", "Run lift #6: consumes supplies and deadline"},
-    {"Pantry 07", "Run pantry #7: consumes supplies and deadline"},
-    {"Road 08", "Run road #8: consumes supplies and deadline"},
-    {"Door 09", "Run door #9: consumes supplies and deadline"},
-    {"Bridge 10", "Run bridge #10: consumes supplies and deadline"},
-    {"Safe 11", "Run safe #11: consumes supplies and deadline"},
-    {"Common 12", "Run common #12: consumes supplies and deadline"},
-    {"Shortcut 13", "Run shortcut #13: consumes supplies and deadline"},
-    {"Ferry 14", "Run ferry #14: consumes supplies and deadline"},
-    {"Crypt 15", "Run crypt #15: consumes supplies and deadline"},
+// ROUTE — travel a leg; different risk/cost profiles
+static const CGC::NamedValue ROWS_ROUTE[] = {
+    {"King's Road",   "Safe, wide, toll-guarded road."},
+    {"Mill Track",    "Common dirt path; moderate risk."},
+    {"Marsh Shortcut","Bog crossing; fast but treacherous."},
+    {"Ridge Pass",    "Mountain trail; cold and exposed."},
+    {"Old Tunnel",    "Crumbling but direct; no weather."},
+    {"River Ferry",   "Costs coin but spares the legs."},
+    {"Night Run",     "Travel dark; avoid guards and tolls."},
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_4[] = {
-    {"Toll 01", "Choose toll #1: changes integrity and reputation"},
-    {"Rain 02", "Choose rain #2: changes integrity and reputation"},
-    {"Rival 03", "Choose rival #3: changes integrity and reputation"},
-    {"Wrong Door 04", "Choose wrong door #4: changes integrity and reputation"},
-    {"Bandit 05", "Choose bandit #5: changes integrity and reputation"},
-    {"Charm 06", "Choose charm #6: changes integrity and reputation"},
-    {"Open Box 07", "Choose open box #7: changes integrity and reputation"},
-    {"Signature 08", "Choose signature #8: changes integrity and reputation"},
-    {"Toll 09", "Choose toll #9: changes integrity and reputation"},
-    {"Rain 10", "Choose rain #10: changes integrity and reputation"},
-    {"Rival 11", "Choose rival #11: changes integrity and reputation"},
-    {"Wrong Door 12", "Choose wrong door #12: changes integrity and reputation"},
-    {"Bandit 13", "Choose bandit #13: changes integrity and reputation"},
-    {"Charm 14", "Choose charm #14: changes integrity and reputation"},
-    {"Open Box 15", "Choose open box #15: changes integrity and reputation"},
-    {"Signature 16", "Choose signature #16: changes integrity and reputation"},
-    {"Toll 17", "Choose toll #17: changes integrity and reputation"},
-    {"Rain 18", "Choose rain #18: changes integrity and reputation"},
-    {"Rival 19", "Choose rival #19: changes integrity and reputation"},
-    {"Wrong Door 20", "Choose wrong door #20: changes integrity and reputation"},
-    {"Bandit 21", "Choose bandit #21: changes integrity and reputation"},
-    {"Charm 22", "Choose charm #22: changes integrity and reputation"},
-    {"Open Box 23", "Choose open box #23: changes integrity and reputation"},
-    {"Signature 24", "Choose signature #24: changes integrity and reputation"},
-    {"Toll 25", "Choose toll #25: changes integrity and reputation"},
-    {"Rain 26", "Choose rain #26: changes integrity and reputation"},
-    {"Rival 27", "Choose rival #27: changes integrity and reputation"},
-    {"Wrong Door 28", "Choose wrong door #28: changes integrity and reputation"},
-    {"Bandit 29", "Choose bandit #29: changes integrity and reputation"},
-    {"Charm 30", "Choose charm #30: changes integrity and reputation"},
-    {"Open Box 31", "Choose open box #31: changes integrity and reputation"},
-    {"Signature 32", "Choose signature #32: changes integrity and reputation"},
-    {"Toll 33", "Choose toll #33: changes integrity and reputation"},
-    {"Rain 34", "Choose rain #34: changes integrity and reputation"},
-    {"Rival 35", "Choose rival #35: changes integrity and reputation"},
-    {"Wrong Door 36", "Choose wrong door #36: changes integrity and reputation"},
-    {"Bandit 37", "Choose bandit #37: changes integrity and reputation"},
-    {"Charm 38", "Choose charm #38: changes integrity and reputation"},
-    {"Open Box 39", "Choose open box #39: changes integrity and reputation"},
-    {"Signature 40", "Choose signature #40: changes integrity and reputation"},
-    {"Toll 41", "Choose toll #41: changes integrity and reputation"},
-    {"Rain 42", "Choose rain #42: changes integrity and reputation"},
-    {"Rival 43", "Choose rival #43: changes integrity and reputation"},
-    {"Wrong Door 44", "Choose wrong door #44: changes integrity and reputation"},
-    {"Bandit 45", "Choose bandit #45: changes integrity and reputation"},
-    {"Charm 46", "Choose charm #46: changes integrity and reputation"},
-    {"Open Box 47", "Choose open box #47: changes integrity and reputation"},
-    {"Signature 48", "Choose signature #48: changes integrity and reputation"},
+// DELIVER — close the contract at the destination
+static const CGC::NamedValue ROWS_DELIVER[] = {
+    {"Present Parcel",   "Hand it over and collect pay."},
+    {"Log the Delivery", "Record in the guild ledger."},
+    {"Note Condition",   "Flag parcel state to recipient."},
+    {"Collect Tip",      "Good condition earns extra coin."},
+    {"Sign & Stamp",     "Earn a guild stamp for the run."},
+    {"Explain the Delay","Negotiate if delivery ran late."},
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_5[] = {
-    {"Clean 01", "Close clean #1: pays based on package state"},
-    {"Late 02", "Close late #2: pays based on package state"},
-    {"Damaged 03", "Close damaged #3: pays based on package state"},
-    {"Opened 04", "Close opened #4: pays based on package state"},
-    {"Fake Seal 05", "Close fake seal #5: pays based on package state"},
-    {"Bonus 06", "Close bonus #6: pays based on package state"},
-    {"Rival 07", "Close rival #7: pays based on package state"},
-    {"Secret 08", "Close secret #8: pays based on package state"},
-    {"Clean 09", "Close clean #9: pays based on package state"},
-    {"Late 10", "Close late #10: pays based on package state"},
-    {"Damaged 11", "Close damaged #11: pays based on package state"},
-    {"Opened 12", "Close opened #12: pays based on package state"},
+// PACKAGE — inspect or handle a weird parcel mid-route
+static const CGC::NamedValue ROWS_PACKAGE[] = {
+    {"Shake & Listen",  "Rattle test; non-invasive."},
+    {"Sniff the Seam",  "Check for leaks or strange smell."},
+    {"Peek Inside",     "Break the seal and look in."},
+    {"Rebind the Cord", "Tighten loose wrappings."},
+    {"Talk to It",      "Some parcels respond to kindness."},
+    {"Ignore It",       "Keep walking; it'll settle down."},
 };
 
-static const CardputerGameCore::NamedValue DUNGEON_COURIER_ROWS_6[] = {
-    {"Route Memory 01", "Train route memory #1: spends stamps for a courier edge"},
-    {"Steady Hands 02", "Train steady hands #2: spends stamps for a courier edge"},
-    {"Silver Tongue 03", "Train silver tongue #3: spends stamps for a courier edge"},
-    {"Medic 04", "Train medic #4: spends stamps for a courier edge"},
-    {"Lucky Stamp 05", "Train lucky stamp #5: spends stamps for a courier edge"},
-    {"Night Eye 06", "Train night eye #6: spends stamps for a courier edge"},
-    {"Hard Boots 07", "Train hard boots #7: spends stamps for a courier edge"},
-    {"Ledger 08", "Train ledger #8: spends stamps for a courier edge"},
-    {"Calm 09", "Train calm #9: spends stamps for a courier edge"},
-    {"Shortcut 10", "Train shortcut #10: spends stamps for a courier edge"},
+// PERKS — spend stamps on courier edges
+static const CGC::NamedValue ROWS_PERKS[] = {
+    {"Route Memory",    "Shortcut costs -2 Stam forever."},
+    {"Steady Hands",    "Pack integrity loss -2 per event."},
+    {"Silver Tongue",   "Tolls and bandits easier to bluff."},
+    {"Medic",           "Bandage rest heals +4 Stam."},
+    {"Lucky Stamp",     "Earn bonus stamp on each delivery."},
+    {"Night Walker",    "Night Run costs -3 Stam."},
+    {"Iron Stomach",    "Rations restore +3 extra Stam."},
+    {"Package Whisperer","Weird boxes raise Stress less."},
 };
 
-static const CardputerGameCore::DeepScreenDef SCREENS[] = {
-    {"TOWN", "Visit", DUNGEON_COURIER_ROWS_0, 9, {2, 1, 4, -2, 0, 1, -1, -1}, 3, 0, 1UL},
-    {"BOARD", "Accept", DUNGEON_COURIER_ROWS_1, 36, {6, -1, -3, 2, -3, 1, 1, 0}, 5, 1, 2UL},
-    {"PACK", "Buy", DUNGEON_COURIER_ROWS_2, 16, {-2, 2, 2, -1, 2, 0, -1, -1}, 3, 2, 4UL},
-    {"ROUTE", "Travel", DUNGEON_COURIER_ROWS_3, 15, {4, -2, -7, 3, -4, 1, 1, 1}, 5, 3, 8UL},
-    {"EVENT", "Resolve", DUNGEON_COURIER_ROWS_4, 48, {3, -1, -2, 2, -5, 1, 2, 1}, 4, 4, 16UL},
-    {"DELIVERY", "Deliver", DUNGEON_COURIER_ROWS_5, 12, {10, 0, 4, -3, -4, 2, -2, -1}, 7, 5, 32UL},
-    {"PERKS", "Learn", DUNGEON_COURIER_ROWS_6, 10, {-6, 0, 2, -2, 2, -3, -1, -1}, 4, 6, 64UL},
+// REST — late-game guild-gated recovery and perk reinforcement
+static const CGC::NamedValue ROWS_REST[] = {
+    {"Guild Infirmary",  "Full rest and wound treatment."},
+    {"Scribe the Route", "Document a path for the guild."},
+    {"Mentor a Courier", "Share knowledge; gain renown."},
+    {"Review Ledger",    "Audit stamps and career record."},
+    {"Plan Trial Route", "Study the guild license trial."},
+    {"Accept Chain Job", "Take a linked prestige contract."},
 };
 
-static const CardputerGameCore::NamedValue EVENTS[] = {
-    {"Pressure 01", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Choice 02", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Discovery 03", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Trouble 04", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Favor 05", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Warning 06", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Breakthrough 07", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Setback 08", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Pressure 09", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Choice 10", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Discovery 11", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Trouble 12", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Favor 13", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Warning 14", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Breakthrough 15", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Setback 16", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Pressure 17", "A bespoke Dungeon Courier event changes saved state and story flags."},
-    {"Choice 18", "A bespoke Dungeon Courier event changes saved state and story flags."},
+// ---------------------------------------------------------------------------
+// Screens
+// ---------------------------------------------------------------------------
+static const CGC::DeepScreenDef SCREENS[] = {
+    // BOARD: review contracts, sets F_JOB_ACTIVE
+    {.title = "BOARD", .verb = "Accept", .rows = ROWS_BOARD, .rowCount = 8,
+     .resourceDeltas = {0, 1, 0, -1, 0, 0, 0, 0},
+     .progressDelta = 1, .trackerIndex = 0,
+     .flagMask = F_JOB_ACTIVE,
+     .costResource = -1, .costAmount = 0, .requireFlags = 0,
+     .trackerDelta = 1,
+     .objective = "Accept a delivery contract"},
+
+    // SUPPLIES: buy food/bandages/gear before route leg
+    {.title = "SUPPLIES", .verb = "Buy", .rows = ROWS_SUPPLIES, .rowCount = 8,
+     .resourceDeltas = {0, 4, 5, -1, 0, 0, 0, 0},
+     .progressDelta = 1, .trackerIndex = 1,
+     .flagMask = F_SUPPLIED,
+     .costResource = R_GOLD, .costAmount = 10, .requireFlags = F_JOB_ACTIVE,
+     .trackerDelta = 1,
+     .objective = "Stock up for the road (-10 Gold)"},
+
+    // ROUTE: travel a leg; costs Stam; triggers events
+    {.title = "ROUTE", .verb = "Travel", .rows = ROWS_ROUTE, .rowCount = 7,
+     .resourceDeltas = {0, -8, -3, 2, 0, 1, 0, 0},
+     .progressDelta = 4, .trackerIndex = 2,
+     .flagMask = F_EN_ROUTE,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_JOB_ACTIVE,
+     .trackerDelta = 1,
+     .objective = "Travel a route leg (-8 Stam)"},
+
+    // DELIVER: close the contract; gated on having a job active
+    {.title = "DELIVER", .verb = "Deliver", .rows = ROWS_DELIVER, .rowCount = 6,
+     .resourceDeltas = {18, 3, 0, -4, 0, -2, 1, 0},
+     .progressDelta = 8, .trackerIndex = 3,
+     .flagMask = 0,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_JOB_ACTIVE | F_EN_ROUTE,
+     .trackerDelta = 1,
+     .objective = "Complete the contract (+Gold, +Stamp)"},
+
+    // PACKAGE: handle/peek at weird parcel; risky, sets flags
+    {.title = "PACKAGE", .verb = "Handle", .rows = ROWS_PACKAGE, .rowCount = 6,
+     .resourceDeltas = {0, 0, -4, 3, 0, 2, 0, 0},
+     .progressDelta = 2, .trackerIndex = 4,
+     .flagMask = F_PKG_WEIRD,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_JOB_ACTIVE,
+     .trackerDelta = 1,
+     .objective = "Investigate the parcel (risky)"},
+
+    // PERKS: spend stamps to buy courier edges
+    {.title = "PERKS", .verb = "Learn", .rows = ROWS_PERKS, .rowCount = 8,
+     .resourceDeltas = {0, 2, 0, -2, -1, 0, -2, 0},
+     .progressDelta = 2, .trackerIndex = 5,
+     .flagMask = F_PERK_BOUGHT,
+     .costResource = R_STAMP, .costAmount = 3, .requireFlags = 0,
+     .trackerDelta = 1,
+     .objective = "Buy a courier edge (-3 Stamps)"},
+
+    // REST: late-game guild rest stop; gated on F_LATE_GAME
+    {.title = "REST", .verb = "Rest", .rows = ROWS_REST, .rowCount = 6,
+     .resourceDeltas = {-5, 15, 8, -5, -2, -3, 0, 0},
+     .progressDelta = 3, .trackerIndex = 6,
+     .flagMask = 0,
+     .costResource = -1, .costAmount = 0, .requireFlags = F_LATE_GAME,
+     .trackerDelta = 1,
+     .objective = "Guild rest (needs 8 Stamps earned)"},
 };
 
-static const CardputerGameCore::NamedValue ENDINGS[] = {
-    {"Legend Run", "Ending path 1: resources, flags, and reputation decide this outcome."},
-    {"Hard Truth", "Ending path 2: resources, flags, and reputation decide this outcome."},
-    {"Quiet Win", "Ending path 3: resources, flags, and reputation decide this outcome."},
-    {"Faction Path", "Ending path 4: resources, flags, and reputation decide this outcome."},
-    {"Costly Deal", "Ending path 5: resources, flags, and reputation decide this outcome."},
-    {"Run Failed", "Ending path 6: resources, flags, and reputation decide this outcome."},
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+static const CGC::EventDef EVENTS[] = {
+    // --- Common neutral filler ---
+    {.name = "Quiet road",
+     .note = "No trouble. You make good time.",
+     .resourceDeltas = {0, 2, 0, -1, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 5,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_NEUTRAL},
+
+    {.name = "Gentle rest",
+     .note = "A shaded mile lets you recover.",
+     .resourceDeltas = {0, 3, 0, -1, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 4,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // --- Route hazards ---
+    {.name = "Bandit stop",
+     .note = "Demand payment or surrender the parcel.",
+     .resourceDeltas = {-8, -2, 0, 3, 1, 2, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = -1, .weight = 3,
+     .requireFlags = F_EN_ROUTE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Toll gate",
+     .note = "Guards expect coin to let you pass.",
+     .resourceDeltas = {-6, 0, 0, 1, 0, 1, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = F_EN_ROUTE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Storm breaks",
+     .note = "Rain batters the parcel and your boots.",
+     .resourceDeltas = {0, -4, -6, 2, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = F_EN_ROUTE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Mudslide",
+     .note = "The path is blocked. Brutal detour.",
+     .resourceDeltas = {0, -6, -2, 3, 1, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_EN_ROUTE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Lucky stamp find",
+     .note = "An old guild stamp lies in the road.",
+     .resourceDeltas = {0, 0, 0, 0, 0, 0, 1, 0},
+     .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 1, .weight = 2,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    {.name = "Friendly merchant",
+     .note = "Trade a story for coin and rations.",
+     .resourceDeltas = {5, 2, 0, -1, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 0, .repDelta = 1, .weight = 3,
+     .requireFlags = 0, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // --- Weird / cursed package events ---
+    {.name = "Package hums",
+     .note = "A low tone from inside. Unsettling.",
+     .resourceDeltas = {0, 0, 0, 3, 0, 1, 0, 0},
+     .setFlags = F_PKG_WEIRD, .trackerIndex = 4, .trackerDelta = 1,
+     .repIndex = -1, .repDelta = 0, .weight = 3,
+     .requireFlags = F_JOB_ACTIVE, .forbidFlags = F_PKG_WEIRD, .tone = CGC::TONE_BAD},
+
+    {.name = "Parcel argues",
+     .note = "It disagrees with your route choice.",
+     .resourceDeltas = {0, -1, 0, 4, 0, 0, 0, 0},
+     .setFlags = 0, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_PKG_WEIRD, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Parcel leaks",
+     .note = "Something oozes. Integrity drops fast.",
+     .resourceDeltas = {0, 0, -8, 2, 0, 2, 0, 0},
+     .setFlags = F_PKG_WEIRD, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_JOB_ACTIVE, .forbidFlags = 0, .tone = CGC::TONE_BAD},
+
+    {.name = "Parcel tempts you",
+     .note = "Gold glints through a crack in the seal.",
+     .resourceDeltas = {0, 0, 0, 4, 0, 3, 0, 0},
+     .setFlags = F_PKG_WEIRD, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = -1, .repDelta = 0, .weight = 2,
+     .requireFlags = F_JOB_ACTIVE, .forbidFlags = F_PKG_OPENED, .tone = CGC::TONE_BAD},
+
+    {.name = "Opened and cursed",
+     .note = "Inside: a mirror that shows nothing good.",
+     .resourceDeltas = {8, 0, -10, 5, 0, 5, 0, 0},
+     .setFlags = F_PKG_OPENED | F_CURSED, .trackerIndex = 4, .trackerDelta = 1,
+     .repIndex = 2, .repDelta = -2, .weight = 2,
+     .requireFlags = F_PKG_WEIRD, .forbidFlags = F_PKG_OPENED, .tone = CGC::TONE_BAD},
+
+    {.name = "Opened: bonus pay",
+     .note = "Client hid a note: double rate if intact.",
+     .resourceDeltas = {12, 0, 0, 1, 0, 2, 1, 0},
+     .setFlags = F_PKG_OPENED, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 1, .repDelta = 1, .weight = 1,
+     .requireFlags = F_PKG_WEIRD, .forbidFlags = F_PKG_OPENED | F_CURSED, .tone = CGC::TONE_GOOD},
+
+    // --- Rival couriers ---
+    {.name = "Rival undercuts",
+     .note = "Courier Bleck snatches your next client.",
+     .resourceDeltas = {-4, 0, 0, 3, 0, 0, 0, 0},
+     .setFlags = F_RIVAL_MET, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 3, .repDelta = -1, .weight = 2,
+     .requireFlags = 0, .forbidFlags = F_RIVAL_MET, .tone = CGC::TONE_BAD},
+
+    {.name = "Rival trades favors",
+     .note = "Rival Maren swaps a map for silence.",
+     .resourceDeltas = {0, 3, 0, 0, 0, -1, 1, 0},
+     .setFlags = 0, .trackerIndex = 5, .trackerDelta = 1,
+     .repIndex = 1, .repDelta = 1, .weight = 2,
+     .requireFlags = F_RIVAL_MET, .forbidFlags = 0, .tone = CGC::TONE_GOOD},
+
+    // --- Late-game arc ---
+    {.name = "Guild trial notice",
+     .note = "Eight stamps: you qualify for the trial.",
+     .resourceDeltas = {0, 0, 0, -2, 0, 0, 0, 0},
+     .setFlags = F_LATE_GAME, .trackerIndex = -1, .trackerDelta = 0,
+     .repIndex = 1, .repDelta = 2, .weight = 3,
+     .requireFlags = 0, .forbidFlags = F_LATE_GAME, .tone = CGC::TONE_GOOD},
 };
 
-static const CardputerGameCore::DeepGameDefinition DEF = {
-    "Dungeon Courier",
-    "dungeon-courier",
-    "Contract delivery RPG",
-    "DCR2",
-    RESOURCES,
-    sizeof(RESOURCES) / sizeof(RESOURCES[0]),
-    SCREENS,
-    sizeof(SCREENS) / sizeof(SCREENS[0]),
-    EVENTS,
-    sizeof(EVENTS) / sizeof(EVENTS[0]),
-    ENDINGS,
-    sizeof(ENDINGS) / sizeof(ENDINGS[0]),
-    160,
-    0xB81F,
-    0xFD20
+// ---------------------------------------------------------------------------
+// Endings (most-specific first)
+// ---------------------------------------------------------------------------
+static const CGC::EndingDef ENDINGS[] = {
+    // 1. Cursed legend: completed run AND opened a cursed parcel
+    {.name = "Cursed Legend",
+     .note = "Every delivery haunts you. But you delivered.",
+     .cond = {.resourceIndex = R_STAMP, .resourceMin = 8, .resourceMax = 99,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_PKG_OPENED | F_CURSED, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 2. Rival ruin: victory, rival met, low suspicion — you out-ran them
+    {.name = "Rival Ruin",
+     .note = "Bleck and Maren never caught up. You did.",
+     .cond = {.resourceIndex = R_SUSP, .resourceMin = 0, .resourceMax = 30,
+              .trackerIndex = 3, .trackerMin = 6,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_RIVAL_MET, .forbidFlags = F_CURSED,
+              .requiresVictory = true}},
+
+    // 3. Infamous: victory but high suspicion — known but feared
+    {.name = "Infamous Courier",
+     .note = "Notorious, alive, and still delivering.",
+     .cond = {.resourceIndex = R_SUSP, .resourceMin = 60, .resourceMax = 100,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 4. Haunted: victory with opened package but not cursed
+    {.name = "Haunted Run",
+     .note = "You know what was inside. You always will.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_PKG_OPENED, .forbidFlags = F_CURSED,
+              .requiresVictory = true}},
+
+    // 5. Trusted career: clean victory with perks and stamps
+    {.name = "Trusted Courier",
+     .note = "The guild hangs your crest at every gate.",
+     .cond = {.resourceIndex = R_STAMP, .resourceMin = 6, .resourceMax = 99,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = F_PERK_BOUGHT, .forbidFlags = F_CURSED,
+              .requiresVictory = true}},
+
+    // 6. Catch-all victory
+    {.name = "Career Complete",
+     .note = "Stamps in hand, roads behind you.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = true}},
+
+    // 7. Catch-all loss
+    {.name = "Lost in the Road",
+     .note = "Stamina spent, parcel lost, career over.",
+     .cond = {.resourceIndex = -1, .resourceMin = 0, .resourceMax = 0,
+              .trackerIndex = -1, .trackerMin = 0,
+              .repIndex = -1, .repMin = 0,
+              .requireFlags = 0, .forbidFlags = 0,
+              .requiresVictory = false}},
 };
 
-const CardputerGameCore::DeepGameDefinition& gameDefinition() {
+// ---------------------------------------------------------------------------
+// Tracker labels
+// ---------------------------------------------------------------------------
+static const char* const TRACKER_LABELS[] = {
+    "Contracts", "Supplies", "Routes", "Deliveries",
+    "Packages",  "Stamps",   "Rests",  nullptr,
+};
+
+// ---------------------------------------------------------------------------
+// Game definition
+// ---------------------------------------------------------------------------
+static const CGC::DeepGameDefinition DEF = {
+    .title          = "Dungeon Courier",
+    .slug           = "dungeon-courier",
+    .subtitle       = "Contract delivery RPG",
+    .saveMagic      = "DCR2",
+    .resources      = RESOURCES,
+    .resourceCount  = sizeof(RESOURCES) / sizeof(RESOURCES[0]),
+    .screens        = SCREENS,
+    .screenCount    = sizeof(SCREENS) / sizeof(SCREENS[0]),
+    .events         = EVENTS,
+    .eventCount     = sizeof(EVENTS) / sizeof(EVENTS[0]),
+    .endings        = ENDINGS,
+    .endingCount    = sizeof(ENDINGS) / sizeof(ENDINGS[0]),
+    .targetProgress = 160,
+    .accentColor    = 0xB81F,
+    .warningColor   = 0xFD20,
+    .trackerLabels      = TRACKER_LABELS,
+    .trackerLabelCount  = 8,
+    .objective          = "Deliver contracts; build a courier career.",
+    .primaryTracker     = 3,
+};
+
+const CGC::DeepGameDefinition& gameDefinition() {
   return DEF;
 }
